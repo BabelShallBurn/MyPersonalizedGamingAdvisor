@@ -1,1 +1,1 @@
-# YourPersonalizedGamingAdvisor
+# MyPersonalizedGamingAdvisor
