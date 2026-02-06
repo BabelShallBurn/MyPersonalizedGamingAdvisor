@@ -19,7 +19,7 @@ Das Projekt integriert Daten aus Steam über die Steam-API, um zusätzliche Info
 
 - **Backend**: FastAPI (Python)
 - **Datenbank**: PostgreSQL
-- **ORM**: SQLAlchemy (vermutlich, basierend auf der Struktur)
+- **ORM**: SQLModel, SQLAlchemy
 - **API-Integration**: Steam Web API
 - **Entwicklungsumgebung**: Python 3.8+, Jupyter Notebook für Prototyping
 

@@ -31,7 +31,13 @@ app_details = requests.get(
     url=URL2, params=params2, timeout=10
 ).json()[params2["appids"]]["data"]
 
+description_soup = BeautifulSoup(app_details["detailed_description"], 'html.parser')
+description = description_soup.get_text()
+
 minimum_soup = BeautifulSoup(app_details['pc_requirements']['minimum'], 'html.parser')
 minimum_requirements = minimum_soup.get_text()
 
-print(f"Name: {app_details["name"]}\n\ndeteials: {app_details["detailed_description"]}\n\nrequirements: {minimum_requirements}")
+recomended_soup = BeautifulSoup(app_details['pc_requirements']['recommended'], 'html.parser')
+recomended_requirements = recomended_soup.get_text()
+
+print(f"\nName: {app_details["name"]}\n\ndetails: {description}\n\nminimum requirements: {minimum_requirements}\n\nrecommended requierements: {recomended_requirements}")

@@ -9,6 +9,7 @@ class User(SQLModel, table=True):
     name: str
     mail: str
     language: str
+    age: int
 
 class Games(SQLModel, table=True):
     """Repräsentiert ein Spiel in der Datenbank mit Details wie Name, Beschreibung und Anforderungen."""
