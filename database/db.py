@@ -10,15 +10,19 @@ class User(SQLModel, table=True):
     mail: str
     language: str
     age: int
+    platform: str
 
 class Games(SQLModel, table=True):
     """Repräsentiert ein Spiel in der Datenbank mit Details wie Name, Beschreibung und Anforderungen."""
     id: int | None = Field(default=None, primary_key=True)
     game_name: str
     description: str
-    genre: str
+    genres: str
+    usk: int
+    price: float
+    platforms: str
     min_requirements: str
-    recommended_requirements: str
+    recommended_requirements: str | None
 
 class UserGames(SQLModel, table=True):
     """Repräsentiert die Beziehung zwischen einem Benutzer und einem Spiel in der Datenbank."""

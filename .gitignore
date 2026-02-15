@@ -1,3 +1,4 @@
 .env
 playground.ipynb
 database/__pycache__
+app.log
