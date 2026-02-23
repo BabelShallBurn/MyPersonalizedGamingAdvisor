@@ -2,12 +2,13 @@
 
 import os
 import logging
-from decimal import Decimal, InvalidOperation
 from dotenv import load_dotenv
+from pydantic import ValidationError
 from sqlmodel import create_engine, SQLModel, Session
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ArgumentError, SQLAlchemyError, IntegrityError
 from database.db import Games, User
+from database.schemas import GameIn, UserCreate, UserUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,20 @@ def create_tables():
         logger.error("Engine could not be created; tables cannot be created.")
 
 
+def drop_all_tables() -> bool:
+    """Drop all tables registered in SQLModel metadata."""
+    if engine is None:
+        logger.error("Engine could not be created; tables cannot be dropped.")
+        return False
+    try:
+        SQLModel.metadata.drop_all(engine)
+        logger.info("All tables dropped successfully.")
+        return True
+    except (OperationalError, SQLAlchemyError) as e:
+        logger.error("Error dropping tables: %s", e)
+        return False
+
+
 def save_game_details(app_details: dict) -> bool:
     """Store normalized Steam game details in the ``Games`` table.
 
@@ -55,35 +70,23 @@ def save_game_details(app_details: dict) -> bool:
         return False
 
     try:
-        if not isinstance(app_details, dict):
-            logger.error("Invalid app_details format: %s", type(app_details))
-            return False
-
-        usk_raw = app_details.get("usk", 0)
-        usk = int(usk_raw) if usk_raw not in (None, "") else 0
-        if usk not in {0, 6, 12, 16, 18}:
-            usk = 0
-
-        price_raw = app_details.get("price", "0.00")
-        price = Decimal(str(price_raw))
-        if price < 0:
-            price = Decimal("0.00")
+        game_in = GameIn.model_validate(app_details)
 
         game_kwargs = {
-            "game_name": app_details.get("name", "Unknown"),
-            "description": app_details.get("description", ""),
-            "genres": app_details.get("genres", ""),
-            "usk": usk,
-            "price": price,
-            "platforms": app_details.get("platforms", ""),
-            "min_requirements": app_details.get("minimum_requirements", ""),
-            "recommended_requirements": app_details.get("recommended_requirements") or None,
+            "game_name": game_in.name,
+            "description": game_in.description,
+            "genres": game_in.genres,
+            "usk": game_in.usk,
+            "price": game_in.price,
+            "platforms": game_in.platforms,
+            "min_requirements": game_in.minimum_requirements,
+            "recommended_requirements": game_in.recommended_requirements,
         }
 
         if hasattr(Games, "release_date"):
-            game_kwargs["release_date"] = app_details.get("release_date", "")
+            game_kwargs["release_date"] = game_in.release_date
         if hasattr(Games, "steam_appid"):
-            game_kwargs["steam_appid"] = app_details.get("appid")
+            game_kwargs["steam_appid"] = game_in.appid
 
         game = Games(**game_kwargs)
 
@@ -96,8 +99,8 @@ def save_game_details(app_details: dict) -> bool:
     except (OperationalError, SQLAlchemyError) as e:
         logger.error("Error saving game to database: %s", e)
         return False
-    except (ValueError, TypeError, InvalidOperation) as e:
-        logger.error("Error during data conversion: %s", e)
+    except ValidationError as e:
+        logger.error("Validation failed for game payload: %s", e)
         return False
 
 
@@ -107,12 +110,24 @@ def create_user(name: str, email: str, language: str, age: int, platform: str) -
         logger.error("Engine not available.")
         return None
     try:
-        user = User(name=name, email=email, language=language, age=age, platform=platform)
+        validated = UserCreate.model_validate(
+            {
+                "name": name,
+                "email": email,
+                "language": language,
+                "age": age,
+                "platform": platform,
+            }
+        )
+        user = User(**validated.model_dump())
         with Session(engine) as session:
             session.add(user)
             session.commit()
             session.refresh(user)
             return user
+    except ValidationError as e:
+        logger.error("Validation failed for user creation payload: %s", e)
+        return None
     except IntegrityError:
         logger.error("User with email '%s' already exists.", email)
         return None
@@ -132,15 +147,17 @@ def update_user(user_id: int, **updates) -> User | None:
             if user is None:
                 return None
 
-            allowed = {"name", "email", "language", "age", "platform"}
-            for key, value in updates.items():
-                if key in allowed and value is not None:
-                    setattr(user, key, value)
+            validated = UserUpdate.model_validate(updates)
+            for key, value in validated.model_dump(exclude_none=True).items():
+                setattr(user, key, value)
 
             session.add(user)
             session.commit()
             session.refresh(user)
             return user
+    except ValidationError as e:
+        logger.error("Validation failed for user update payload: %s", e)
+        return None
     except IntegrityError as e:
         logger.error("Error updating user: email must be unique: %s", e)
         return None
