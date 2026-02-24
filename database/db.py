@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Numeric, String, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -85,12 +85,45 @@ class UserGames(SQLModel, table=True):
     """Represents the relation between a user and a game."""
 
     __table_args__ = (
-        UniqueConstraint("user_id", "game_id", name="uq_user_games_user_game"),
+        CheckConstraint(
+            "status IN ('owned', 'wishlist', 'playing', 'completed')",
+            name="ck_user_games_status_valid",
+        ),
+        CheckConstraint(
+            "rating IS NULL OR (rating >= 0 AND rating <= 10)",
+            name="ck_user_games_rating_range",
+        ),
+        CheckConstraint(
+            "playtime_hours >= 0",
+            name="ck_user_games_playtime_non_negative",
+        ),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id", nullable=False, index=True)
-    game_id: int = Field(foreign_key="games.id", nullable=False, index=True)
+    user_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("user.id", ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        )
+    )
+    game_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("games.id", ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        )
+    )
+    status: str = Field(
+        default="owned",
+        sa_column=Column(String(20), nullable=False, server_default=text("'owned'")),
+    )
+    rating: int | None = Field(default=None, nullable=True)
+    playtime_hours: Decimal = Field(
+        default=Decimal("0.0"),
+        sa_column=Column(Numeric(8, 1), nullable=False, server_default=text("0")),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
@@ -110,7 +143,14 @@ class GameSystemRequirement(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    game_id: int = Field(foreign_key="games.id", nullable=False, index=True)
+    game_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("games.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
     platform: str = Field(sa_column=Column(String(10), nullable=False))
     minimum: str = Field(default="", nullable=False)
     recommended: str | None = Field(default=None, nullable=True)
