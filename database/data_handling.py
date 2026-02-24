@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from sqlmodel import create_engine, SQLModel, Session
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ArgumentError, SQLAlchemyError, IntegrityError
-from database.db import Games, User
+from database.db import GameSystemRequirement, Games, User
 from database.schemas import GameIn, UserCreate, UserUpdate
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,14 @@ def save_game_details(app_details: dict) -> bool:
     try:
         game_in = GameIn.model_validate(app_details)
 
+        requirements_to_persist = game_in.system_requirements.copy()
+
+        # Normalize by platform to avoid duplicate entries that would violate
+        # uq_game_system_requirements_game_platform.
+        normalized_requirements = {}
+        for req in requirements_to_persist:
+            normalized_requirements[req.platform] = req
+
         game_kwargs = {
             "game_name": game_in.name,
             "description": game_in.description,
@@ -79,8 +87,7 @@ def save_game_details(app_details: dict) -> bool:
             "usk": game_in.usk,
             "price": game_in.price,
             "platforms": game_in.platforms,
-            "min_requirements": game_in.minimum_requirements,
-            "recommended_requirements": game_in.recommended_requirements,
+            "recommendations": game_in.recommendations,
         }
 
         if hasattr(Games, "release_date"):
@@ -88,10 +95,23 @@ def save_game_details(app_details: dict) -> bool:
         if hasattr(Games, "steam_appid"):
             game_kwargs["steam_appid"] = game_in.appid
 
-        game = Games(**game_kwargs)
-
         with Session(engine) as session:
+            game = Games(**game_kwargs)
             session.add(game)
+            session.flush()
+            if game.id is None:
+                raise ValueError("Game ID was not generated after flush.")
+            game_id = game.id
+
+            for req in normalized_requirements.values():
+                requirement = GameSystemRequirement(
+                    game_id=game_id,
+                    platform=req.platform,
+                    minimum=req.minimum,
+                    recommended=req.recommended,
+                )
+                session.add(requirement)
+
             session.commit()
             logger.info("Game '%s' saved to database successfully.", game.game_name)
             return True

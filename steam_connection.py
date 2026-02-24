@@ -3,6 +3,7 @@
 import os
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 import requests
 from dotenv import load_dotenv
@@ -55,6 +56,52 @@ def _extract_usk_rating(raw_data: dict) -> int:
     return rating if rating in {0, 6, 12, 16, 18} else 0
 
 
+def _extract_platform_requirements(raw_data: dict) -> list[dict]:
+    """Extract normalized requirements grouped by supported platforms."""
+    requirements: list[dict] = []
+    for platform in ("pc", "mac", "linux"):
+        platform_data = raw_data.get(f"{platform}_requirements")
+        if not isinstance(platform_data, dict):
+            continue
+
+        minimum = _extract_clean_text(platform_data.get("minimum", ""))
+        recommended = _extract_clean_text(platform_data.get("recommended", ""))
+
+        if not minimum and not recommended:
+            continue
+
+        requirements.append(
+            {
+                "platform": platform,
+                "minimum": minimum,
+                "recommended": recommended or None,
+            }
+        )
+    return requirements
+
+
+def _parse_release_date(release_date_payload: dict | None) -> str:
+    """Parse Steam release date text to ISO date, fallback to original text."""
+    if not isinstance(release_date_payload, dict):
+        return ""
+
+    raw_date = release_date_payload.get("date", "")
+    if not isinstance(raw_date, str):
+        return ""
+
+    cleaned = raw_date.replace("\xa0", " ").strip()
+    if not cleaned:
+        return ""
+
+    for fmt in ("%d %b, %Y", "%d %B, %Y", "%b %d, %Y", "%B %d, %Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    return cleaned
+
+
 def create_game_info_dict(raw_data: dict) -> dict:
     """Map raw Steam app data to the internal game schema."""
     app_info: dict = {}
@@ -65,13 +112,11 @@ def create_game_info_dict(raw_data: dict) -> dict:
     description_html = raw_data.get("detailed_description") or raw_data.get("about_the_game") or ""
     app_info["description"] = _extract_clean_text(description_html)
 
-    pc_requirements = raw_data.get("pc_requirements")
-    if isinstance(pc_requirements, dict):
-        app_info["minimum_requirements"] = _extract_clean_text(pc_requirements.get("minimum", ""))
-        app_info["recommended_requirements"] = _extract_clean_text(pc_requirements.get("recommended", ""))
-    else:
-        app_info["minimum_requirements"] = ""
-        app_info["recommended_requirements"] = ""
+    system_requirements = _extract_platform_requirements(raw_data)
+    app_info["system_requirements"] = system_requirements
+
+    app_info["minimum_requirements"] = ""
+    app_info["recommended_requirements"] = None
 
     genres = raw_data.get("genres")
     if isinstance(genres, list):
@@ -99,11 +144,13 @@ def create_game_info_dict(raw_data: dict) -> dict:
 
     app_info["usk"] = _extract_usk_rating(raw_data)
 
-    release_date = raw_data.get("release_date")
-    if isinstance(release_date, dict):
-        app_info["release_date"] = release_date.get("date", "")
+    app_info["release_date"] = _parse_release_date(raw_data.get("release_date"))
+
+    recommendations = raw_data.get("recommendations")
+    if isinstance(recommendations, dict):
+        app_info["recommendations"] = recommendations.get("total", 0)
     else:
-        app_info["release_date"] = ""
+        app_info["recommendations"] = 0
 
     return app_info
 

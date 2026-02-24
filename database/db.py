@@ -46,12 +46,14 @@ class Games(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("usk IN (0, 6, 12, 16, 18)", name="ck_games_usk_valid"),
         CheckConstraint("price >= 0", name="ck_games_price_non_negative"),
+        CheckConstraint("recommendations >= 0", name="ck_games_recommendations_non_negative"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
     steam_appid: int | None = Field(default=None, nullable=True, index=True)
     game_name: str = Field(sa_column=Column(String(200), nullable=False, index=True))
     release_date: str = Field(sa_column=Column(String(40), nullable=False, default=""))
+    recommendations: int = Field(default=0, nullable=False)
     description: str = Field(default="", nullable=False)
     genres: str = Field(default="", nullable=False)
     usk: int = Field(default=0, nullable=False)
@@ -60,8 +62,6 @@ class Games(SQLModel, table=True):
         sa_column=Column(Numeric(10, 2), nullable=False),
     )
     platforms: str = Field(default="", nullable=False)
-    min_requirements: str = Field(default="", nullable=False)
-    recommended_requirements: str | None = Field(default=None, nullable=True)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
@@ -96,6 +96,38 @@ class UserGames(SQLModel, table=True):
         sa_column=Column(
             DateTime(timezone=True),
             server_default=text("CURRENT_TIMESTAMP"),
+            nullable=False,
+        )
+    )
+
+
+class GameSystemRequirement(SQLModel, table=True):
+    """Represents platform specific system requirements for a game."""
+
+    __table_args__ = (
+        UniqueConstraint("game_id", "platform", name="uq_game_system_requirements_game_platform"),
+        CheckConstraint("platform IN ('pc', 'mac', 'linux')", name="ck_system_requirements_platform_valid"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    game_id: int = Field(foreign_key="games.id", nullable=False, index=True)
+    platform: str = Field(sa_column=Column(String(10), nullable=False))
+    minimum: str = Field(default="", nullable=False)
+    recommended: str | None = Field(default=None, nullable=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=text("CURRENT_TIMESTAMP"),
+            nullable=False,
+        )
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=text("CURRENT_TIMESTAMP"),
+            onupdate=text("CURRENT_TIMESTAMP"),
             nullable=False,
         )
     )

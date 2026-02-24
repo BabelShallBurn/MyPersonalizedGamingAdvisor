@@ -1,10 +1,33 @@
 """Pydantic input schemas for validation before database persistence."""
 
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 VALID_USK_RATINGS = {0, 6, 12, 16, 18}
+VALID_SYSTEM_PLATFORMS = {"pc", "mac", "linux"}
+
+
+class SystemRequirementIn(BaseModel):
+    """Validated platform specific system requirement payload."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    platform: str = Field(min_length=2, max_length=10)
+    minimum: str = ""
+    recommended: str | None = None
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def normalize_platform(cls, value: Any) -> str:
+        """Normalize platform names to supported values."""
+        if value is None:
+            raise ValueError("platform is required")
+        normalized = str(value).strip().lower()
+        if normalized not in VALID_SYSTEM_PLATFORMS:
+            raise ValueError(f"unsupported platform: {normalized}")
+        return normalized
 
 
 class GameIn(BaseModel):
@@ -21,11 +44,13 @@ class GameIn(BaseModel):
     platforms: str = ""
     minimum_requirements: str = ""
     recommended_requirements: str | None = None
+    system_requirements: list[SystemRequirementIn] = Field(default_factory=list)
     release_date: str = ""
+    recommendations: int = 0
 
     @field_validator("usk", mode="before")
     @classmethod
-    def normalize_usk(cls, value: object) -> int:
+    def normalize_usk(cls, value: Any) -> int:
         """Normalize Steam age rating to known USK values."""
         if value in (None, ""):
             return 0
@@ -46,6 +71,18 @@ class GameIn(BaseModel):
         except Exception:  # Decimal conversion errors vary by input type.
             return Decimal("0.00")
         return price if price >= 0 else Decimal("0.00")
+
+    @field_validator("recommendations", mode="before")
+    @classmethod
+    def normalize_recommendations(cls, value: Any) -> int:
+        """Convert recommendation counts to a non-negative integer."""
+        if value in (None, ""):
+            return 0
+        try:
+            recommendations = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return recommendations if recommendations >= 0 else 0
 
 
 class UserCreate(BaseModel):
