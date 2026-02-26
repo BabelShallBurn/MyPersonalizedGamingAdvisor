@@ -171,3 +171,4 @@ class GameSystemRequirement(SQLModel, table=True):
             nullable=False,
         )
     )
+

@@ -1,0 +1,49 @@
+erDiagram
+    USER {
+        int id PK
+        string name
+        string email UK
+        string language
+        int age
+        string platform
+        datetime created_at
+        datetime updated_at
+    }
+
+    GAMES {
+        int id PK
+        int steam_appid
+        string game_name
+        string release_date
+        int recommendations
+        string description
+        string genres
+        int usk
+        decimal price
+        string platforms
+        datetime created_at
+        datetime updated_at
+    }
+
+    USER_GAMES {
+        int user_id PK, FK
+        int game_id PK, FK
+        string status
+        int rating
+        decimal playtime_hours
+        datetime created_at
+    }
+
+    GAME_SYSTEM_REQUIREMENT {
+        int id PK
+        int game_id FK
+        string platform
+        string minimum
+        string recommended
+        datetime created_at
+        datetime updated_at
+    }
+
+    USER ||--o{ USER_GAMES : has
+    GAMES ||--o{ USER_GAMES : in_library
+    GAMES ||--o{ GAME_SYSTEM_REQUIREMENT : has_requirements

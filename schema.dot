@@ -1,0 +1,25 @@
+digraph DatabaseSchema {
+  graph [rankdir=LR, splines=ortho, nodesep=0.8, ranksep=1.0, fontname="Helvetica"];
+  node [shape=record, style="rounded,filled", fillcolor="#f8fafc", color="#334155", fontname="Helvetica"];
+  edge [color="#475569", arrowsize=0.8, fontname="Helvetica"];
+
+  User [
+    label="{USER|id (PK)\lname\lemail (UNIQUE)\llanguage\lage\lplatform\lcreated_at\lupdated_at\l}"
+  ];
+
+  Games [
+    label="{GAMES|id (PK)\lsteam_appid\lgame_name\lrelease_date\lrecommendations\ldescription\lgenres\lusk\lprice\lplatforms\lcreated_at\lupdated_at\l}"
+  ];
+
+  UserGames [
+    label="{USER_GAMES|user_id (PK, FK)\lgame_id (PK, FK)\lstatus\lrating\lplaytime_hours\lcreated_at\l}"
+  ];
+
+  GameSystemRequirement [
+    label="{GAME_SYSTEM_REQUIREMENT|id (PK)\lgame_id (FK)\lplatform\lminimum\lrecommended\lcreated_at\lupdated_at\l}"
+  ];
+
+  User -> UserGames [label="1:n"];
+  Games -> UserGames [label="1:n"];
+  Games -> GameSystemRequirement [label="1:n"];
+}

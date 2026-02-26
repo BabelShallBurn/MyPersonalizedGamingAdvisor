@@ -1,16 +1,21 @@
-"""Steam API integration and transformation pipeline for game records."""
+"""Steam API integration and payload normalization.
 
-import os
+This module only handles external Steam communication and data transformation.
+It does not read from or write to the local database.
+"""
+
+from __future__ import annotations
+
 import logging
-import time
+import os
 from datetime import datetime
 from pathlib import Path
-import requests
-from dotenv import load_dotenv
-from bs4 import BeautifulSoup
-from database.data_handling import engine, create_tables, save_game_details
+from typing import Any
 
-# Setup logging
+import requests
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+
 LOG_FILE = Path(__file__).resolve().parent / "app.log"
 logging.basicConfig(
     level=logging.INFO,
@@ -20,13 +25,50 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-STEAM_API_KEY = os.getenv("STEAM_API_KEY")
-if not STEAM_API_KEY:
-    logger.error("STEAM_API_KEY environment variable is not set.")
-    raise ValueError("STEAM_API_KEY Umgebungsvariable ist nicht gesetzt.")
 
 STEAM_APP_LIST_URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 APP_INFO_URL = "https://store.steampowered.com/api/appdetails"
+
+
+class SteamAPIError(RuntimeError):
+    """Raised when Steam API calls fail or return invalid payloads."""
+
+
+class SteamClient:
+    """Thin Steam API client for catalog endpoints."""
+
+    def __init__(self, api_key: str | None = None, timeout: int = 10) -> None:
+        self.api_key = api_key or os.getenv("STEAM_API_KEY")
+        if not self.api_key:
+            raise ValueError("STEAM_API_KEY Umgebungsvariable ist nicht gesetzt.")
+
+        self.timeout = timeout
+        self.session = requests.Session()
+
+    def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        all_params = {"key": self.api_key, **params}
+        try:
+            response = self.session.get(url=url, params=all_params, timeout=self.timeout)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise SteamAPIError("Steam API lieferte kein valides JSON-Objekt.")
+            return data
+        except requests.RequestException as exc:
+            raise SteamAPIError(f"Steam API Request fehlgeschlagen: {exc}") from exc
+        except ValueError as exc:
+            raise SteamAPIError("Steam API lieferte kein valides JSON.") from exc
+
+
+_CLIENT: SteamClient | None = None
+
+
+def _get_client() -> SteamClient:
+    """Create and cache a client instance on first use."""
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = SteamClient()
+    return _CLIENT
 
 
 def _extract_clean_text(value: str | None) -> str:
@@ -37,7 +79,7 @@ def _extract_clean_text(value: str | None) -> str:
     return soup.get_text(separator=" ", strip=True)
 
 
-def _extract_usk_rating(raw_data: dict) -> int:
+def _extract_usk_rating(raw_data: dict[str, Any]) -> int:
     """Extract a valid USK age rating from raw Steam payload data."""
     ratings = raw_data.get("ratings")
     if not isinstance(ratings, dict):
@@ -56,9 +98,9 @@ def _extract_usk_rating(raw_data: dict) -> int:
     return rating if rating in {0, 6, 12, 16, 18} else 0
 
 
-def _extract_platform_requirements(raw_data: dict) -> list[dict]:
+def _extract_platform_requirements(raw_data: dict[str, Any]) -> list[dict[str, str | None]]:
     """Extract normalized requirements grouped by supported platforms."""
-    requirements: list[dict] = []
+    requirements: list[dict[str, str | None]] = []
     for platform in ("pc", "mac", "linux"):
         platform_data = raw_data.get(f"{platform}_requirements")
         if not isinstance(platform_data, dict):
@@ -80,7 +122,7 @@ def _extract_platform_requirements(raw_data: dict) -> list[dict]:
     return requirements
 
 
-def _parse_release_date(release_date_payload: dict | None) -> str:
+def _parse_release_date(release_date_payload: dict[str, Any] | None) -> str:
     """Parse Steam release date text to ISO date, fallback to original text."""
     if not isinstance(release_date_payload, dict):
         return ""
@@ -102,9 +144,9 @@ def _parse_release_date(release_date_payload: dict | None) -> str:
     return cleaned
 
 
-def create_game_info_dict(raw_data: dict) -> dict:
+def create_game_info_dict(raw_data: dict[str, Any]) -> dict[str, Any]:
     """Map raw Steam app data to the internal game schema."""
-    app_info: dict = {}
+    app_info: dict[str, Any] = {}
 
     app_info["appid"] = raw_data.get("steam_appid", raw_data.get("appid"))
     app_info["name"] = raw_data.get("name", "")
@@ -112,9 +154,7 @@ def create_game_info_dict(raw_data: dict) -> dict:
     description_html = raw_data.get("detailed_description") or raw_data.get("about_the_game") or ""
     app_info["description"] = _extract_clean_text(description_html)
 
-    system_requirements = _extract_platform_requirements(raw_data)
-    app_info["system_requirements"] = system_requirements
-
+    app_info["system_requirements"] = _extract_platform_requirements(raw_data)
     app_info["minimum_requirements"] = ""
     app_info["recommended_requirements"] = None
 
@@ -143,7 +183,6 @@ def create_game_info_dict(raw_data: dict) -> dict:
         app_info["platforms"] = ""
 
     app_info["usk"] = _extract_usk_rating(raw_data)
-
     app_info["release_date"] = _parse_release_date(raw_data.get("release_date"))
 
     recommendations = raw_data.get("recommendations")
@@ -154,101 +193,65 @@ def create_game_info_dict(raw_data: dict) -> dict:
 
     return app_info
 
-def retrieve_app_list(URL: str) -> list:
+
+def retrieve_app_list(url: str = STEAM_APP_LIST_URL) -> list[dict[str, Any]]:
     """Fetch the full Steam app list using paginated API requests."""
-    params_app_list = {"key": STEAM_API_KEY, "include_games": "true", "max_results": "50000", "last_appid": "0"}
-    app_list = []
+    params = {
+        "include_games": "true",
+        "max_results": "50000",
+        "last_appid": "0",
+    }
+    app_list: list[dict[str, Any]] = []
+
     while True:
         try:
-            response = requests.get(url=URL, params=params_app_list, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            if "response" not in data or "apps" not in data["response"]:
-                logger.warning("Unexpected response format from Steam API: %s", data)
-                break
-            apps = data["response"]["apps"]
-            app_list.extend(apps)
-            if "have_more_results" not in data["response"]:
-                break
-            params_app_list["last_appid"] = data["response"].get("last_appid", "0")
-        except requests.exceptions.RequestException as e:
-            logger.error("Error retrieving app list: %s", e)
+            payload = _get_client()._get_json(url, params)
+        except SteamAPIError as exc:
+            logger.error("Error retrieving app list: %s", exc)
             break
-        except Exception as e:
-            logger.error("Unexpected error retrieving app list: %s", e)
+
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            logger.warning("Unexpected response format from Steam API: %s", payload)
             break
-    return app_list if app_list else []
+
+        apps = response.get("apps", [])
+        if isinstance(apps, list):
+            app_list.extend([app for app in apps if isinstance(app, dict)])
+
+        if "have_more_results" not in response:
+            break
+
+        params["last_appid"] = str(response.get("last_appid", "0"))
+
+    return app_list
 
 
-
-def retrieve_app_details(app_id: int) -> dict | None:
+def retrieve_app_details(app_id: int) -> dict[str, Any] | None:
     """Fetch details for a Steam app ID and return normalized game data."""
-    params_app_info = {"appids": str(app_id)}
     try:
-        response = requests.get(url=APP_INFO_URL, params=params_app_info, timeout=10)
-        response.raise_for_status()
-        payload = response.json()
-        app_payload = payload.get(str(app_id))
-
-        if not isinstance(app_payload, dict) or not app_payload.get("success", False):
-            logger.warning("No data received for AppID %s.", app_id)
-            return None
-
-        raw_data = app_payload.get("data")
-        if not isinstance(raw_data, dict):
-            logger.warning("Invalid data format for AppID %s.", app_id)
-            return None
-
-        app_info = create_game_info_dict(raw_data)
-        if not app_info.get("name"):
-            logger.warning("Empty or incomplete game information for AppID %s.", app_id)
-            return None
-        return app_info
-    except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving app details for AppID %s: %s", app_id, e)
-        return None
-    except Exception as e:
-        logger.error("Unexpected error for AppID %s: %s", app_id, e)
+        payload = _get_client()._get_json(APP_INFO_URL, {"appids": str(app_id)})
+    except SteamAPIError as exc:
+        logger.error("Error retrieving app details for AppID %s: %s", app_id, exc)
         return None
 
+    app_payload = payload.get(str(app_id))
+    if not isinstance(app_payload, dict) or not app_payload.get("success", False):
+        logger.warning("No data received for AppID %s.", app_id)
+        return None
 
+    raw_data = app_payload.get("data")
+    if not isinstance(raw_data, dict):
+        logger.warning("Invalid data format for AppID %s.", app_id)
+        return None
 
+    app_info = create_game_info_dict(raw_data)
+    if not app_info.get("name"):
+        logger.warning("Empty or incomplete game information for AppID %s.", app_id)
+        return None
 
-def process_and_save_apps(apps: list[dict]) -> None:
-    """Process an app list, fetch details, and persist each game record."""
-    for app in apps:
-        appid = app.get("appid")
-        if not appid:
-            logger.warning("App without a valid appid found: %s", app)
-            continue
-
-        game = retrieve_app_details(appid)
-        if game:
-            success = save_game_details(game)
-            if success:
-                logger.info("Saved: %s", game.get("name", "Unknown"))
-            else:
-                logger.error("Error saving: %s", game.get("name", "Unknown"))
-        else:
-            logger.warning("No details received for AppID %s.", appid)
-        time.sleep(2.5)
-
-
-def main():
-    """Run the end-to-end flow: fetch list, fetch details, save results."""
-    logger.info("Starting Steam app list retrieval...")
-    apps = retrieve_app_list(STEAM_APP_LIST_URL)
-
-    if len(apps) == 0:
-        logger.error("No apps received from the Steam API.")
-        return
-
-    logger.info("%s apps found. Starting detail retrieval...", len(apps))
-    process_and_save_apps(apps)
+    return app_info
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.critical("Unexpected error in main program: %s", e)
+    logger.info("Steam integration module loaded. No database side-effects are executed.")
