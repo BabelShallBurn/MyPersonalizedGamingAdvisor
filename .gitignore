@@ -4,3 +4,9 @@ database/__pycache__
 app.log
 test.py
 __pycache__/*
+tests/*
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
