@@ -1,10 +1,11 @@
 """Simple recommendation scoring based on user library and optional preferences.
 
-The scorer combines four signals:
+The scorer combines up to five signals:
 1) genre affinity from a user-genre histogram
 2) description similarity (TF-IDF cosine to a user text profile)
 3) recommendation volume from the game catalog (log-normalized)
 4) optional preferred-genre affinity passed at request time
+5) optional query-description similarity from free-form user input
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ def recommend_games_for_user(
     *,
     top_k: int = 10,
     preferred_genres: list[str] | None = None,
+    query_text: str | None = None,
     weights: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Return top-k recommendations with explainable score components.
@@ -58,10 +60,12 @@ def recommend_games_for_user(
         user_id: The user to score recommendations for.
         top_k: Number of recommendations to return.
         preferred_genres: Optional user-provided preferred genres.
+        query_text: Optional free-form query text from the user.
         weights: Optional weights for signals. Keys:
             - genre
             - preferred_genres
             - description
+            - query_description
             - recommendations
     """
     if engine is None:
@@ -69,25 +73,37 @@ def recommend_games_for_user(
 
     preferred_genre_weights = _normalize_genre_preferences(preferred_genres)
     include_preferred_genres = bool(preferred_genre_weights)
+    normalized_query_text = (query_text or "").strip()
+    include_query_description = bool(normalized_query_text)
 
+    score_weights = {
+        "genre": 0.40,
+        "description": 0.35,
+        "recommendations": 0.25,
+    }
     if include_preferred_genres:
-        score_weights = {
-            "genre": 0.30,
-            "preferred_genres": 0.20,
-            "description": 0.30,
-            "recommendations": 0.20,
-        }
-    else:
-        score_weights = {
-            "genre": 0.45,
-            "description": 0.35,
-            "recommendations": 0.20,
-        }
+        score_weights["preferred_genres"] = 0.20
+        score_weights["genre"] = 0.30
+        score_weights["description"] = 0.30
+        score_weights["recommendations"] = 0.20
+    if include_query_description:
+        score_weights["query_description"] = 0.25
+        if include_preferred_genres:
+            score_weights["genre"] = 0.25
+            score_weights["preferred_genres"] = 0.15
+            score_weights["description"] = 0.20
+            score_weights["recommendations"] = 0.15
+        else:
+            score_weights["genre"] = 0.30
+            score_weights["description"] = 0.25
+            score_weights["recommendations"] = 0.20
 
     if weights:
         score_weights.update(weights)
     if not include_preferred_genres:
         score_weights.pop("preferred_genres", None)
+    if not include_query_description:
+        score_weights.pop("query_description", None)
     weight_sum = sum(max(value, 0.0) for value in score_weights.values())
     if weight_sum <= 0:
         return []
@@ -131,12 +147,26 @@ def recommend_games_for_user(
     text_profile = np.asarray(library_matrix.mean(axis=0))
     description_scores = cosine_similarity(candidate_matrix, text_profile).ravel().tolist()
 
-    # 3) Recommendation volume normalization
+    # 3) Query text similarity to candidate descriptions
+    if include_query_description:
+        query_vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=1)
+        query_matrix = query_vectorizer.fit_transform(candidate_docs + [normalized_query_text])
+        query_profile = query_matrix[-1]
+        query_candidates_matrix = query_matrix[:-1]
+        query_description_scores = (
+            cosine_similarity(query_candidates_matrix, query_profile).ravel().tolist()
+        )
+    else:
+        query_description_scores = [0.0] * len(candidates)
+
+    # 4) Recommendation volume normalization
     max_recommendations = max(max(game.recommendations, 0) for game in candidates)
     max_log_recommendations = math.log1p(max_recommendations) if max_recommendations > 0 else 1.0
 
     scored_games: list[dict[str, Any]] = []
-    for game, description_score in zip(candidates, description_scores):
+    for game, description_score, query_description_score in zip(
+        candidates, description_scores, query_description_scores
+    ):
         genres = _parse_genres(game.genres)
 
         if genres and genre_weights:
@@ -161,6 +191,7 @@ def recommend_games_for_user(
             score_weights["genre"] * genre_score
             + score_weights.get("preferred_genres", 0.0) * preferred_genre_score
             + score_weights["description"] * description_score
+            + score_weights.get("query_description", 0.0) * query_description_score
             + score_weights["recommendations"] * recommendations_score
         )
 
@@ -173,6 +204,7 @@ def recommend_games_for_user(
                 "genre_score": round(genre_score, 6),
                 "preferred_genre_score": round(preferred_genre_score, 6),
                 "description_score": round(description_score, 6),
+                "query_description_score": round(query_description_score, 6),
                 "recommendations_score": round(recommendations_score, 6),
                 "recommendations": game.recommendations,
                 "genres": game.genres,
