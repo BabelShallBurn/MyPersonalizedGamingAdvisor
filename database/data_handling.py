@@ -14,7 +14,7 @@ from sqlalchemy.exc import ArgumentError, IntegrityError, OperationalError, SQLA
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from database.db import GameSystemRequirement, Games, User, UserGames
-from database.schemas import GameIn, UserCreate, UserUpdate
+from schemas.db import GameIn, UserCreate, UserUpdate
 
 logger = logging.getLogger(__name__)
 
