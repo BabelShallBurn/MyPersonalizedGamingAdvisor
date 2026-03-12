@@ -14,6 +14,9 @@ import math
 from collections import Counter
 from typing import Any
 
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -21,6 +24,11 @@ from sqlmodel import Session, select
 
 from database.data_handling import engine
 from database.db import Games, UserGames
+from schemas.recommendations import (
+    RecommendationItem,
+    RecommendationRequest,
+    RecommendationResponse,
+)
 
 def _parse_genres(raw_genres: str | None) -> list[str]:
     """Split CSV-like genres into normalized tokens."""
@@ -213,3 +221,58 @@ def recommend_games_for_user(
 
     scored_games.sort(key=lambda item: item["total_score"], reverse=True)
     return scored_games[: max(top_k, 0)]
+
+
+def parse_recommendation_request(user_text: str, llm: Any) -> RecommendationRequest:
+    """Parse free-form user text into a structured recommendation request."""
+    parser = PydanticOutputParser(pydantic_object=RecommendationRequest)
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", "Extrahiere die Nutzerpraeferenzen als JSON."),
+            ("human", "{user_text}\n\n{format_instructions}"),
+        ]
+    )
+    chain = prompt | llm | parser
+    return chain.invoke(
+        {
+            "user_text": user_text,
+            "format_instructions": parser.get_format_instructions(),
+        }
+    )
+
+
+def recommend_for_user_request(
+    user_id: int, request: RecommendationRequest, *, top_k: int | None = None
+) -> RecommendationResponse:
+    """Run the recommender for a parsed request and shape the response payload."""
+    k = top_k or request.top_k or 10
+    scored = recommend_games_for_user(
+        user_id,
+        top_k=k,
+        preferred_genres=request.preferred_genres,
+        query_text=request.query_text,
+        weights=request.weights,
+    )
+
+    game_ids = [row["game_id"] for row in scored if row.get("game_id") is not None]
+    game_map: dict[int, Games] = {}
+    if engine is not None and game_ids:
+        with Session(engine) as session:
+            games = session.exec(select(Games).where(Games.id.in_(game_ids))).all()
+            game_map = {game.id: game for game in games if game.id is not None}
+
+    recommendations: list[RecommendationItem] = []
+    for row in scored:
+        game = game_map.get(row["game_id"])
+        price = getattr(game, "price", None)
+        recommendations.append(
+            RecommendationItem(
+                title=row["name"],
+                platform=getattr(game, "platforms", None) if game else None,
+                price_eur=float(price) if price is not None else None,
+                total_score=row.get("total_score"),
+                match_reasons=[],
+            )
+        )
+
+    return RecommendationResponse(recommendations=recommendations)
