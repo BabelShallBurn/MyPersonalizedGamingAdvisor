@@ -16,12 +16,9 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-LOG_FILE = Path(__file__).resolve().parent / "app.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8")],
-)
+from logging_config import configure_logging
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 load_dotenv()

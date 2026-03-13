@@ -15,7 +15,9 @@ from sqlmodel import SQLModel, Session, create_engine, select
 
 from database.db import GameSystemRequirement, Games, User, UserGames
 from schemas.db import GameIn, UserCreate, UserUpdate
+from logging_config import configure_logging
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -25,7 +27,7 @@ if DB_URL is None:
     raise ValueError("DATABASE_URL Umgebungsvariable ist nicht gesetzt.")
 
 try:
-    engine = create_engine(DB_URL, echo=True)
+    engine = create_engine(DB_URL, echo=False)
     with engine.connect():
         logger.info("Database connection established successfully.")
 except OperationalError as e:
