@@ -3,15 +3,8 @@ from __future__ import annotations
 import os
 
 from langchain_openai import ChatOpenAI
-from sqlmodel import Session, select
-
-from database.data_handling import engine
-from database.db import User
+from database.data_handling import engine, get_user_by_email
 from recommender import parse_recommendation_request, recommend_for_user_request
-
-
-def _get_user_by_email(session: Session, email: str) -> User | None:
-    return session.exec(select(User).where(User.email == email)).first()
 
 
 def main() -> None:
@@ -19,13 +12,15 @@ def main() -> None:
         print("Keine DB-Verbindung.")
         return
 
-    user_email = os.getenv("TEST_USER_EMAIL", "eric@example.com")
-    with Session(engine) as session:
-        user = _get_user_by_email(session, user_email)
-        if user is None or user.id is None:
-            print(f"Kein User gefunden: {user_email}")
-            return
-        user_id = user.id
+    user_email = input("Bitte E-Mail eingeben (leer = TEST_USER_EMAIL): ").strip()
+    if not user_email:
+        user_email = os.getenv("TEST_USER_EMAIL", "eric@example.com")
+
+    user = get_user_by_email(user_email)
+    if user is None or user.id is None:
+        print(f"Kein User gefunden: {user_email}")
+        return
+    user_id = user.id
 
     user_text = "Ich suche ein actiongeladenes Abenteuer mit RPG-Elementen."
 

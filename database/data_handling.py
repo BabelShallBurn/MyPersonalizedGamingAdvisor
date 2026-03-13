@@ -48,6 +48,20 @@ def create_tables() -> None:
         logger.error("Engine could not be created; tables cannot be created.")
 
 
+def get_user_by_email(email: str) -> User | None:
+    """Return a user by email address."""
+    if engine is None:
+        logger.error("Engine not available.")
+        return None
+
+    normalized = email.strip().lower()
+    if "@" not in normalized:
+        return None
+
+    with Session(engine) as session:
+        return session.exec(select(User).where(User.email == normalized)).first()
+
+
 def drop_all_tables() -> bool:
     """Drop all tables registered in SQLModel metadata."""
     if engine is None:
