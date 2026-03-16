@@ -14,20 +14,10 @@ from database.db import Games, User, UserGames
 from recommender import parse_recommendation_request, recommend_for_user_request
 
 
-OWNED_GAME_KEYWORDS = (
-    "ich habe",
-    "ich besitze",
-    "gehoert mir",
-    "in meiner sammlung",
-    "ich spiele",
-)
-RECOMMENDATION_KEYWORDS = (
-    "empfehle",
-    "empfehlung",
-    "suche",
-    "kannst du",
-    "recommend",
-)
+class RouteDecision(BaseModel):
+    intent: Literal["owned_games", "recommendation", "profile_update", "unknown"]
+    confidence: float = Field(ge=0, le=1)
+    followup_question: str | None = None
 
 
 class OwnedGame(BaseModel):
@@ -53,7 +43,7 @@ def _prompt_non_empty(prompt: str, *, default: str | None = None) -> str:
             return raw
         if default is not None:
             return default
-        print("Bitte gib einen Wert ein.")
+        print("Please enter a value.")
 
 
 def _prompt_int(prompt: str, *, default: int | None = None, min_value: int | None = None) -> int:
@@ -64,19 +54,19 @@ def _prompt_int(prompt: str, *, default: int | None = None, min_value: int | Non
         try:
             value = int(raw)
         except ValueError:
-            print("Bitte eine ganze Zahl eingeben.")
+            print("Please enter an integer.")
             continue
         if min_value is not None and value < min_value:
-            print(f"Bitte eine Zahl >= {min_value} eingeben.")
+            print(f"Please enter a number >= {min_value}.")
             continue
         return value
 
 
 def _prompt_email() -> str:
     default = os.getenv("TEST_USER_EMAIL")
-    prompt = "Bitte gib deine E-Mail ein"
+    prompt = "Please enter your email"
     if default:
-        prompt += f" (Enter fuer {default})"
+        prompt += f" (press Enter for {default})"
     prompt += ": "
     while True:
         raw = input(prompt).strip()
@@ -84,7 +74,7 @@ def _prompt_email() -> str:
             return raw
         if default:
             return default
-        print("E-Mail darf nicht leer sein.")
+        print("Email must not be empty.")
 
 
 def _get_or_create_user(email: str) -> User | None:
@@ -95,11 +85,11 @@ def _get_or_create_user(email: str) -> User | None:
         if user is not None:
             return user
 
-        print("Kein User gefunden. Bitte Profil anlegen.")
+        print("No user found. Let's create your profile.")
         name = _prompt_non_empty("Name: ")
-        language = _prompt_non_empty("Sprache (z.B. de): ", default="de")
-        age = _prompt_int("Alter: ", min_value=0)
-        platform = _prompt_non_empty("Plattform (z.B. PC): ", default="PC")
+        language = _prompt_non_empty("Language (e.g. en): ", default="en")
+        age = _prompt_int("Age: ", min_value=0)
+        platform = _prompt_non_empty("Platform (e.g. PC): ", default="PC")
 
         user = User(
             name=name,
@@ -114,13 +104,37 @@ def _get_or_create_user(email: str) -> User | None:
         return user
 
 
-def classify_intent(user_text: str) -> str:
-    text = user_text.lower()
-    if any(keyword in text for keyword in OWNED_GAME_KEYWORDS):
-        return "owned_games"
-    if any(keyword in text for keyword in RECOMMENDATION_KEYWORDS):
-        return "recommendation"
-    return "unknown"
+def route_user_text(user_text: str, llm: Any) -> RouteDecision:
+    parser = PydanticOutputParser(pydantic_object=RouteDecision)
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a router for a gaming advisor chat. "
+                "Choose the correct intent class: "
+                "owned_games (user names games they own), "
+                "recommendation (user asks for recommendations), "
+                "profile_update (user wants to update their profile), "
+                "unknown (unclear). "
+                "If unclear, set intent='unknown' and ask a short follow-up question.\n\n"
+                "Examples:\n"
+                "- \"I own Hades and Hollow Knight.\" -> owned_games\n"
+                "- \"I have 20 hours in Elden Ring.\" -> owned_games\n"
+                "- \"Recommend a fast-paced racing game.\" -> recommendation\n"
+                "- \"I'm looking for a cozy farming sim.\" -> recommendation\n"
+                "- \"Change my platform to PC.\" -> profile_update\n"
+                "- \"Update my age to 25.\" -> profile_update\n",
+            ),
+            ("human", "{user_text}\n\n{format_instructions}"),
+        ]
+    )
+    chain = prompt | llm | parser
+    return chain.invoke(
+        {
+            "user_text": user_text,
+            "format_instructions": parser.get_format_instructions(),
+        }
+    )
 
 
 def parse_owned_games(user_text: str, llm: Any) -> OwnedGamesRequest:
@@ -129,8 +143,8 @@ def parse_owned_games(user_text: str, llm: Any) -> OwnedGamesRequest:
         [
             (
                 "system",
-                "Extrahiere genannte Spiele als JSON. "
-                "Gib eine Liste mit Titel und optional platform, status, rating, playtime_hours.",
+                "Extract the mentioned games as JSON. "
+                "Return a list with title and optional platform, status, rating, playtime_hours.",
             ),
             ("human", "{user_text}\n\n{format_instructions}"),
         ]
@@ -157,23 +171,23 @@ def _find_game_candidates(session: Session, title: str, *, limit: int = 5) -> li
 def _resolve_game(session: Session, title: str) -> Games | None:
     candidates = _find_game_candidates(session, title)
     if not candidates:
-        print(f"Kein Treffer fuer '{title}'.")
+        print(f"No match for '{title}'.")
         return None
     if len(candidates) == 1:
         return candidates[0]
 
-    print(f"Mehrere Treffer fuer '{title}':")
+    print(f"Multiple matches for '{title}':")
     for idx, game in enumerate(candidates, start=1):
         print(f"{idx}. {game.game_name}")
-    print("0. Ueberspringen")
+    print("0. Skip")
 
     while True:
-        choice = _prompt_int("Auswahl: ", min_value=0)
+        choice = _prompt_int("Select: ", min_value=0)
         if choice == 0:
             return None
         if 1 <= choice <= len(candidates):
             return candidates[choice - 1]
-        print("Ungueltige Auswahl.")
+        print("Invalid selection.")
 
 
 def _upsert_user_game(
@@ -218,44 +232,53 @@ def _upsert_user_game(
 
 def _print_recommendations(response: Any) -> None:
     if not response.recommendations:
-        print("Keine Empfehlungen gefunden.")
+        print("No recommendations found.")
         return
-    print("Empfehlungen:")
+    print("Recommendations:")
     for rec in response.recommendations:
-        price = f"{rec.price_eur:.2f} EUR" if rec.price_eur is not None else "Preis unbekannt"
+        price = f"{rec.price_eur:.2f} EUR" if rec.price_eur is not None else "Price unknown"
         platform = rec.platform or "-"
         print(f"- {rec.title} | {platform} | {price} | Score: {rec.total_score}")
 
 
 def _print_owned_games_result(saved_titles: list[str]) -> None:
     if not saved_titles:
-        print("Keine Spiele eingetragen.")
+        print("No games saved.")
         return
-    print("Eingetragen:")
+    print("Saved:")
     for title in saved_titles:
         print(f"- {title}")
 
 
 def chat_session(user: User, llm: ChatOpenAI) -> None:
-    print("Du kannst loslegen. Tippe 'exit' zum Beenden.")
+    print("You can start now. Type 'exit' to quit.")
     while True:
         user_text = input("> ").strip()
         if not user_text:
             continue
         if user_text.lower() in {"exit", "quit", "ende"}:
-            print("Tschuess!")
+            print("Bye!")
             break
 
-        intent = classify_intent(user_text)
+        decision = route_user_text(user_text, llm)
+        intent = decision.intent
+        needs_clarification = intent == "unknown" or decision.confidence < 0.6
+
+        if needs_clarification:
+            print(
+                decision.followup_question
+                or "Do you mean recommendations or owned games?"
+            )
+            continue
 
         if intent == "owned_games":
             try:
                 owned_request = parse_owned_games(user_text, llm)
             except Exception:
-                print("Konnte die Spiele nicht erkennen. Bitte liste sie klar auf.")
+                print("Couldn't parse the games. Please list them clearly.")
                 continue
             if not owned_request.games:
-                print("Keine Spiele erkannt. Bitte erneut versuchen.")
+                print("No games recognized. Please try again.")
                 continue
 
             saved_titles: list[str] = []
@@ -278,20 +301,20 @@ def chat_session(user: User, llm: ChatOpenAI) -> None:
             continue
 
         print(
-            "Ich bin mir nicht sicher. Du kannst z.B. sagen: "
-            "'Ich besitze Hades und Hollow Knight' oder 'Empfiehl mir ein RPG'."
+            "I'm not sure. You can say for example: "
+            "'I own Hades and Hollow Knight' or 'Recommend an RPG'."
         )
 
 
 def main() -> None:
     if engine is None:
-        print("Keine DB-Verbindung.")
+        print("No DB connection.")
         return
 
     user_email = _prompt_email()
     user = _get_or_create_user(user_email)
     if user is None or user.id is None:
-        print(f"Kein User gefunden: {user_email}")
+        print(f"No user found: {user_email}")
         return
 
     llm = ChatOpenAI(
@@ -304,6 +327,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY fehlt.")
+        print("OPENAI_API_KEY is missing.")
         raise SystemExit(1)
     main()

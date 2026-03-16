@@ -228,7 +228,7 @@ def parse_recommendation_request(user_text: str, llm: Any) -> RecommendationRequ
     parser = PydanticOutputParser(pydantic_object=RecommendationRequest)
     prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", "Extrahiere die Nutzerpraeferenzen als JSON."),
+            ("system", "Extract the user preferences as JSON."),
             ("human", "{user_text}\n\n{format_instructions}"),
         ]
     )
