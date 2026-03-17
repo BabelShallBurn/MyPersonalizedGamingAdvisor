@@ -11,11 +11,14 @@ The scorer combines up to five signals:
 from __future__ import annotations
 
 import math
+import os
 from collections import Counter
 from typing import Any
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from openai import OpenAI
+import tiktoken
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -29,6 +32,87 @@ from schemas.recommendations import (
     RecommendationRequest,
     RecommendationResponse,
 )
+
+_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+_EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "128"))
+_EMBEDDING_MAX_TOKENS = int(os.getenv("EMBEDDING_MAX_TOKENS", "8000"))
+_EMBEDDING_CACHE: dict[int, list[float]] = {}
+
+
+def _get_openai_client() -> OpenAI:
+    return OpenAI()
+
+
+def _truncate_texts(texts: list[str], max_tokens: int) -> list[str]:
+    if not texts:
+        return []
+    if max_tokens <= 0:
+        return ["" for _ in texts]
+    encoder = tiktoken.get_encoding("cl100k_base")
+    truncated: list[str] = []
+    for text in texts:
+        tokens = encoder.encode(text)
+        if len(tokens) > max_tokens:
+            tokens = tokens[:max_tokens]
+            truncated.append(encoder.decode(tokens))
+        else:
+            truncated.append(text)
+    return truncated
+
+
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    if not texts:
+        return []
+    normalized = [text.strip() for text in texts]
+    if any(text == "" for text in normalized):
+        raise ValueError("Embedding input contains empty strings.")
+    normalized = _truncate_texts(normalized, _EMBEDDING_MAX_TOKENS)
+    client = _get_openai_client()
+    embeddings: list[list[float]] = []
+    for start in range(0, len(normalized), _EMBEDDING_BATCH_SIZE):
+        batch = normalized[start : start + _EMBEDDING_BATCH_SIZE]
+        response = client.embeddings.create(
+            model=_EMBEDDING_MODEL,
+            input=batch,
+            encoding_format="float",
+        )
+        data_sorted = sorted(response.data, key=lambda item: item.index)
+        embeddings.extend([item.embedding for item in data_sorted])
+    return embeddings
+
+
+def _get_candidate_embeddings(candidates: list[Games], embedding_dim: int) -> np.ndarray:
+    missing: list[Games] = []
+    for game in candidates:
+        if game.id is None:
+            continue
+        if game.id not in _EMBEDDING_CACHE:
+            missing.append(game)
+
+    if missing:
+        non_empty_games: list[Games] = []
+        non_empty_texts: list[str] = []
+        for game in missing:
+            description = (game.description or "").strip()
+            if description:
+                non_empty_games.append(game)
+                non_empty_texts.append(description)
+            elif game.id is not None:
+                _EMBEDDING_CACHE[game.id] = [0.0] * embedding_dim
+
+        if non_empty_texts:
+            new_embeddings = _embed_texts(non_empty_texts)
+            for game, embedding in zip(non_empty_games, new_embeddings):
+                if game.id is not None:
+                    _EMBEDDING_CACHE[game.id] = embedding
+
+    embeddings: list[list[float]] = []
+    for game in candidates:
+        if game.id is None:
+            embeddings.append([0.0] * embedding_dim)
+            continue
+        embeddings.append(_EMBEDDING_CACHE.get(game.id, [0.0] * embedding_dim))
+    return np.asarray(embeddings, dtype=float)
 
 def _parse_genres(raw_genres: str | None) -> list[str]:
     """Split CSV-like genres into normalized tokens."""
@@ -155,15 +239,17 @@ def recommend_games_for_user(
     text_profile = np.asarray(library_matrix.mean(axis=0))
     description_scores = cosine_similarity(candidate_matrix, text_profile).ravel().tolist()
 
-    # 3) Query text similarity to candidate descriptions
+    # 3) Query text similarity to candidate descriptions (embeddings)
     if include_query_description:
-        query_vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=1)
-        query_matrix = query_vectorizer.fit_transform(candidate_docs + [normalized_query_text])
-        query_profile = query_matrix[-1]
-        query_candidates_matrix = query_matrix[:-1]
-        query_description_scores = (
-            cosine_similarity(query_candidates_matrix, query_profile).ravel().tolist()
-        )
+        query_embedding = _embed_texts([normalized_query_text])[0]
+        candidate_embeddings = _get_candidate_embeddings(candidates, len(query_embedding))
+        query_vector = np.asarray(query_embedding, dtype=float).reshape(1, -1)
+        if candidate_embeddings.ndim != 2 or candidate_embeddings.shape[1] != query_vector.shape[1]:
+            query_description_scores = [0.0] * len(candidates)
+        else:
+            query_description_scores = (
+                cosine_similarity(candidate_embeddings, query_vector).ravel().tolist()
+            )
     else:
         query_description_scores = [0.0] * len(candidates)
 
