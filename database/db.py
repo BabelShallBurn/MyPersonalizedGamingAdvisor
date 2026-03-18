@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
+from pgvector.sqlalchemy import Vector
 
 
 class User(SQLModel, table=True):
@@ -70,6 +71,37 @@ class Games(SQLModel, table=True):
             nullable=False,
         )
     )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=text("CURRENT_TIMESTAMP"),
+            onupdate=text("CURRENT_TIMESTAMP"),
+            nullable=False,
+        )
+    )
+
+
+class GameEmbedding(SQLModel, table=True):
+    """Represents an embedding for a game's description."""
+
+    __table_args__ = (
+        UniqueConstraint("game_id", "model", name="uq_game_embedding_game_model"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    game_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("games.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    model: str = Field(sa_column=Column(String(80), nullable=False))
+    embedding: list[float] = Field(sa_column=Column(Vector(), nullable=False))
+    embedding_dim: int = Field(nullable=False)
+    description_hash: str = Field(sa_column=Column(String(64), nullable=False))
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
@@ -171,4 +203,3 @@ class GameSystemRequirement(SQLModel, table=True):
             nullable=False,
         )
     )
-

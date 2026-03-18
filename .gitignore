@@ -1,8 +1,11 @@
 .env
+.venv/
 playground.ipynb
 database/__pycache__
 app.log
 test.py
+create_game_embedding_table.py
+create_tables.py
 __pycache__/*
 tests/*
 *.pyc

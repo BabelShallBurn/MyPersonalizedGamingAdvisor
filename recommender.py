@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import os
 from collections import Counter
+from hashlib import sha256
 from typing import Any
 
 from langchain_core.output_parsers import PydanticOutputParser
@@ -26,7 +27,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sqlmodel import Session, select
 
 from database.data_handling import engine
-from database.db import Games, UserGames
+from database.db import GameEmbedding, Games, UserGames
 from schemas.recommendations import (
     RecommendationItem,
     RecommendationRequest,
@@ -36,7 +37,6 @@ from schemas.recommendations import (
 _EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 _EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "128"))
 _EMBEDDING_MAX_TOKENS = int(os.getenv("EMBEDDING_MAX_TOKENS", "8000"))
-_EMBEDDING_CACHE: dict[int, list[float]] = {}
 
 
 def _get_openai_client() -> OpenAI:
@@ -81,38 +81,71 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
     return embeddings
 
 
-def _get_candidate_embeddings(candidates: list[Games], embedding_dim: int) -> np.ndarray:
-    missing: list[Games] = []
+def _description_hash(text: str, model: str) -> str:
+    payload = f"{model}::{text}".encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
+def _get_candidate_embeddings(
+    session: Session,
+    candidates: list[Games],
+    embedding_dim: int,
+) -> np.ndarray:
+    candidate_ids = [game.id for game in candidates if game.id is not None]
+    if not candidate_ids:
+        return np.zeros((len(candidates), embedding_dim), dtype=float)
+
+    existing_rows = session.exec(
+        select(GameEmbedding)
+        .where(GameEmbedding.game_id.in_(candidate_ids))
+        .where(GameEmbedding.model == _EMBEDDING_MODEL)
+    ).all()
+    existing_map = {row.game_id: row for row in existing_rows if row.game_id is not None}
+
+    to_embed: list[tuple[Games, str, str]] = []
     for game in candidates:
         if game.id is None:
             continue
-        if game.id not in _EMBEDDING_CACHE:
-            missing.append(game)
+        description = (game.description or "").strip()
+        if not description:
+            continue
+        desc_hash = _description_hash(description, _EMBEDDING_MODEL)
+        row = existing_map.get(game.id)
+        if row is None or row.description_hash != desc_hash:
+            to_embed.append((game, description, desc_hash))
 
-    if missing:
-        non_empty_games: list[Games] = []
-        non_empty_texts: list[str] = []
-        for game in missing:
-            description = (game.description or "").strip()
-            if description:
-                non_empty_games.append(game)
-                non_empty_texts.append(description)
-            elif game.id is not None:
-                _EMBEDDING_CACHE[game.id] = [0.0] * embedding_dim
+    if to_embed:
+        texts = [item[1] for item in to_embed]
+        embeddings = _embed_texts(texts)
+        for (game, _description, desc_hash), embedding in zip(to_embed, embeddings):
+            row = existing_map.get(game.id)
+            if row is None:
+                row = GameEmbedding(
+                    game_id=game.id,
+                    model=_EMBEDDING_MODEL,
+                    embedding=embedding,
+                    embedding_dim=len(embedding),
+                    description_hash=desc_hash,
+                )
+                session.add(row)
+                existing_map[game.id] = row
+            else:
+                row.embedding = embedding
+                row.embedding_dim = len(embedding)
+                row.description_hash = desc_hash
+        session.commit()
 
-        if non_empty_texts:
-            new_embeddings = _embed_texts(non_empty_texts)
-            for game, embedding in zip(non_empty_games, new_embeddings):
-                if game.id is not None:
-                    _EMBEDDING_CACHE[game.id] = embedding
-
-    embeddings: list[list[float]] = []
+    embeddings_out: list[list[float]] = []
     for game in candidates:
         if game.id is None:
-            embeddings.append([0.0] * embedding_dim)
+            embeddings_out.append([0.0] * embedding_dim)
             continue
-        embeddings.append(_EMBEDDING_CACHE.get(game.id, [0.0] * embedding_dim))
-    return np.asarray(embeddings, dtype=float)
+        row = existing_map.get(game.id)
+        if row is None:
+            embeddings_out.append([0.0] * embedding_dim)
+        else:
+            embeddings_out.append(row.embedding)
+    return np.asarray(embeddings_out, dtype=float)
 
 def _parse_genres(raw_genres: str | None) -> list[str]:
     """Split CSV-like genres into normalized tokens."""
@@ -242,7 +275,12 @@ def recommend_games_for_user(
     # 3) Query text similarity to candidate descriptions (embeddings)
     if include_query_description:
         query_embedding = _embed_texts([normalized_query_text])[0]
-        candidate_embeddings = _get_candidate_embeddings(candidates, len(query_embedding))
+        with Session(engine) as session:
+            candidate_embeddings = _get_candidate_embeddings(
+                session,
+                candidates,
+                len(query_embedding),
+            )
         query_vector = np.asarray(query_embedding, dtype=float).reshape(1, -1)
         if candidate_embeddings.ndim != 2 or candidate_embeddings.shape[1] != query_vector.shape[1]:
             query_description_scores = [0.0] * len(candidates)
