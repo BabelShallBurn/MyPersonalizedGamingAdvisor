@@ -37,6 +37,21 @@ from schemas.recommendations import (
 _EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 _EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "128"))
 _EMBEDDING_MAX_TOKENS = int(os.getenv("EMBEDDING_MAX_TOKENS", "8000"))
+_RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "200"))
+
+_QUERY_GENRE_KEYWORDS = {
+    "platformer": {"platformer", "platform", "jump and run", "jump'n'run", "jump n run"},
+    "racing": {"racing", "racer", "race", "motorsport", "car race", "motorcycle"},
+    "shooter": {"shooter", "fps", "third-person shooter", "gunplay"},
+    "open world": {"open world", "open-world"},
+    "roguelike": {"roguelike", "roguelite", "rogue-lite"},
+    "strategy": {"strategy", "tactics", "tactical"},
+    "rpg": {"rpg", "role-playing", "roleplaying"},
+    "simulation": {"simulation", "sim"},
+    "adventure": {"adventure"},
+    "action": {"action", "action-adventure"},
+    "sports": {"sports", "sport"},
+}
 
 
 def _get_openai_client() -> OpenAI:
@@ -170,6 +185,14 @@ def _normalize_genre_preferences(preferred_genres: list[str] | None) -> dict[str
         return {}
     return _normalize_counter(Counter(normalized))
 
+def _infer_query_genre_filters(query_text: str) -> set[str]:
+    text = query_text.lower()
+    inferred: set[str] = set()
+    for genre, keywords in _QUERY_GENRE_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            inferred.add(genre)
+    return inferred
+
 
 def recommend_games_for_user(
     user_id: int,
@@ -251,6 +274,17 @@ def recommend_games_for_user(
     candidates = [game for game in all_games if game.id not in owned_game_ids]
     if not candidates:
         return []
+
+    if include_query_description:
+        inferred_genres = _infer_query_genre_filters(normalized_query_text)
+        if inferred_genres:
+            filtered = [
+                game
+                for game in candidates
+                if inferred_genres.intersection(_parse_genres(game.genres))
+            ]
+            if filtered:
+                candidates = filtered
 
     # 1) Genre profile (histogram -> normalized weights)
     genre_histogram: Counter[str] = Counter()
@@ -344,6 +378,17 @@ def recommend_games_for_user(
         )
 
     scored_games.sort(key=lambda item: item["total_score"], reverse=True)
+    if include_query_description and scored_games:
+        rerank_size = min(len(scored_games), max(_RERANK_TOP_N, top_k * 20))
+        rerank_pool = scored_games[:rerank_size]
+        rerank_pool.sort(
+            key=lambda item: (
+                item.get("query_description_score", 0.0),
+                item.get("total_score", 0.0),
+            ),
+            reverse=True,
+        )
+        scored_games = rerank_pool + scored_games[rerank_size:]
     return scored_games[: max(top_k, 0)]
 
 
