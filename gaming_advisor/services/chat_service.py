@@ -8,6 +8,7 @@ from typing import Any, Callable, Literal
 from sqlmodel import Session, select
 
 from gaming_advisor.db.engine import engine
+from gaming_advisor.db.data_handling import get_user_library
 from gaming_advisor.db.models import Games, UserGames
 from gaming_advisor.llm.routing import (
     OwnedGame,
@@ -30,12 +31,21 @@ class ChatResult:
         message: Optional message for the caller to display.
         saved_titles: Titles persisted during owned-game updates.
         recommendations: Recommendation response payload.
+        library_entries: Library entries with metadata.
     """
 
-    kind: Literal["clarify", "owned_games_saved", "recommendations", "error", "unknown"]
+    kind: Literal[
+        "clarify",
+        "owned_games_saved",
+        "recommendations",
+        "library_list",
+        "error",
+        "unknown",
+    ]
     message: str | None = None
     saved_titles: list[str] | None = None
     recommendations: RecommendationResponse | None = None
+    library_entries: list[dict[str, Any]] | None = None
 
 
 def handle_user_message(
@@ -90,6 +100,10 @@ def handle_user_message(
         request = parse_recommendation_request(user_text, llm)
         response = recommend_for_user_request(user_id, request, top_k=top_k)
         return ChatResult(kind="recommendations", recommendations=response)
+
+    if intent == "library_list":
+        library_entries = get_user_library(user_id)
+        return ChatResult(kind="library_list", library_entries=library_entries)
 
     return ChatResult(
         kind="unknown",

@@ -18,7 +18,7 @@ class RouteDecision(BaseModel):
         followup_question: Optional clarification question when intent is unknown.
     """
 
-    intent: Literal["owned_games", "recommendation", "profile_update", "unknown"]
+    intent: Literal["owned_games", "recommendation", "profile_update", "library_list", "unknown"]
     confidence: float = Field(ge=0, le=1)
     followup_question: str | None = None
 
@@ -67,6 +67,7 @@ def route_user_text(user_text: str, llm: Any) -> RouteDecision:
                 "owned_games (user names games they own), "
                 "recommendation (user asks for recommendations), "
                 "profile_update (user wants to update their profile), "
+                "library_list (user wants to list their library), "
                 "unknown (unclear). "
                 "If unclear, set intent='unknown' and ask a short follow-up question.\n\n"
                 "Examples:\n"
@@ -75,7 +76,9 @@ def route_user_text(user_text: str, llm: Any) -> RouteDecision:
                 "- \"Recommend a fast-paced racing game.\" -> recommendation\n"
                 "- \"I'm looking for a cozy farming sim.\" -> recommendation\n"
                 "- \"Change my platform to PC.\" -> profile_update\n"
-                "- \"Update my age to 25.\" -> profile_update\n",
+                "- \"Update my age to 25.\" -> profile_update\n"
+                "- \"Show me my library.\" -> library_list\n"
+                "- \"List my games.\" -> library_list\n",
             ),
             ("human", "{user_text}\n\n{format_instructions}"),
         ]

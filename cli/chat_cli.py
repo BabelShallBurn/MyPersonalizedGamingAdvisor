@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from gaming_advisor.config import OPENAI_API_KEY, TEST_USER_EMAIL
 from gaming_advisor.db.engine import engine
 from gaming_advisor.db.models import Games, User
+from gaming_advisor.db.data_handling import get_user_library
 from gaming_advisor.services.chat_service import handle_user_message
 
 
@@ -213,6 +214,25 @@ def _print_owned_games_result(saved_titles: list[str]) -> None:
         print(f"- {title}")
 
 
+def _print_library(entries: list[dict[str, Any]]) -> None:
+    """Print the user's library entries to stdout."""
+    if not entries:
+        print("Your library is empty.")
+        return
+
+    print("Your library:")
+    for entry in entries:
+        status = entry.get("status", "owned")
+        rating = entry.get("rating")
+        playtime = entry.get("playtime_hours")
+        details = [status]
+        if rating is not None:
+            details.append(f"rating {rating}/10")
+        if playtime is not None:
+            details.append(f"{playtime:.1f}h")
+        print(f"- {entry.get('name', 'Unknown')} ({', '.join(details)})")
+
+
 def chat_session(user: User, llm: ChatOpenAI) -> None:
     """Run an interactive chat session for a single user.
 
@@ -228,6 +248,9 @@ def chat_session(user: User, llm: ChatOpenAI) -> None:
         if user_text.lower() in {"exit", "quit", "ende"}:
             print("Bye!")
             break
+        if user_text.lower() in {"library", "/library", "list games", "list library"}:
+            _print_library(get_user_library(user.id))
+            continue
 
         result = handle_user_message(
             user.id,
@@ -243,6 +266,10 @@ def chat_session(user: User, llm: ChatOpenAI) -> None:
 
         if result.kind == "owned_games_saved":
             _print_owned_games_result(result.saved_titles or [])
+            continue
+
+        if result.kind == "library_list":
+            _print_library(result.library_entries or [])
             continue
 
         if result.kind == "recommendations":
