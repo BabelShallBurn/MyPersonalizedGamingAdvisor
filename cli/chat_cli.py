@@ -198,6 +198,10 @@ def _print_recommendations(response: Any) -> None:
         price = f"{rec.price_eur:.2f} EUR" if rec.price_eur is not None else "Price unknown"
         platform = rec.platform or "-"
         print(f"- {rec.title} | {platform} | {price} | Score: {rec.total_score}")
+        if rec.match_reasons:
+            print("  Reasons:")
+            for reason in rec.match_reasons:
+                print(f"  - {reason}")
 
 
 def _print_owned_games_result(saved_titles: list[str]) -> None:

@@ -15,11 +15,13 @@ class RecommendationRequest(BaseModel):
     Attributes:
         query_text: User's search or preference description (required).
         preferred_genres: List of preferred game genres to filter results.
+        max_release_age_years: Optional maximum age of the game in years.
         top_k: Maximum number of recommendations to return (1-50).
         weights: Optional custom weights for scoring recommendations.
     """
     query_text: str = Field(min_length=1)
     preferred_genres: list[str] = Field(default_factory=list)
+    max_release_age_years: int | None = Field(default=None, ge=0, le=100)
     top_k: int | None = Field(default=None, ge=1, le=50)
     weights: dict[str, float] | None = None
 

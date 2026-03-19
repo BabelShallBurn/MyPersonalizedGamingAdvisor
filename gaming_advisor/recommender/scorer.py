@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from datetime import date, datetime
 from hashlib import sha256
 from typing import Any
 
@@ -57,6 +58,50 @@ _QUERY_GENRE_KEYWORDS = {
     "action": {"action", "action-adventure"},
     "sports": {"sports", "sport"},
 }
+
+
+def _safe_subtract_years(target: date, years: int) -> date:
+    """Subtract whole years from a date, clamping Feb 29 to Feb 28 when needed."""
+    try:
+        return target.replace(year=target.year - years)
+    except ValueError:
+        return target.replace(year=target.year - years, month=2, day=28)
+
+
+def _parse_release_date_value(raw_value: str | None) -> date | None:
+    """Parse a release date string into a date.
+
+    Supports ISO dates, common Steam date formats, and year-only strings.
+    Returns None when parsing is not possible.
+    """
+    if not raw_value:
+        return None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    if len(text) == 7 and text[4] == "-":
+        try:
+            return datetime.strptime(f"{text}-01", "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    if len(text) == 4 and text.isdigit():
+        return date(int(text), 1, 1)
+
+    for fmt in ("%d %b, %Y", "%d %B, %Y", "%b %d, %Y", "%B %d, %Y", "%b %Y", "%B %Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+
+    return None
 
 
 def _get_openai_client() -> OpenAI:
@@ -281,6 +326,7 @@ def recommend_games_for_user(
     top_k: int = 10,
     preferred_genres: list[str] | None = None,
     query_text: str | None = None,
+    max_release_age_years: int | None = None,
     weights: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Return top-k recommendations with explainable score components.
@@ -358,6 +404,19 @@ def recommend_games_for_user(
     candidates = [game for game in all_games if game.id not in owned_game_ids]
     if not candidates:
         return []
+
+    if max_release_age_years is not None:
+        cutoff = _safe_subtract_years(date.today(), max_release_age_years)
+        dated_candidates: list[Games] = []
+        for game in candidates:
+            release_date = _parse_release_date_value(getattr(game, "release_date", None))
+            if release_date is None:
+                continue
+            if release_date >= cutoff:
+                dated_candidates.append(game)
+        candidates = dated_candidates
+        if not candidates:
+            return []
 
     if include_query_description:
         inferred_genres = _infer_query_genre_filters(normalized_query_text)
@@ -458,6 +517,7 @@ def recommend_games_for_user(
                 "recommendations_score": round(recommendations_score, 6),
                 "recommendations": game.recommendations,
                 "genres": game.genres,
+                "score_weights": score_weights,
             }
         )
 
@@ -489,7 +549,12 @@ def parse_recommendation_request(user_text: str, llm: Any) -> RecommendationRequ
     parser = PydanticOutputParser(pydantic_object=RecommendationRequest)
     prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", "Extract the user preferences as JSON."),
+            (
+                "system",
+                "Extract the user preferences as JSON. "
+                "If the user mentions a maximum game age like 'not older than 3 years', "
+                "set max_release_age_years to that number.",
+            ),
             ("human", "{user_text}\n\n{format_instructions}"),
         ]
     )
@@ -521,6 +586,7 @@ def recommend_for_user_request(
         top_k=k,
         preferred_genres=request.preferred_genres,
         query_text=request.query_text,
+        max_release_age_years=request.max_release_age_years,
         weights=request.weights,
     )
 
@@ -535,14 +601,69 @@ def recommend_for_user_request(
     for row in scored:
         game = game_map.get(row["game_id"])
         price = getattr(game, "price", None)
+        match_reasons = _build_match_reasons(row, game, request)
         recommendations.append(
             RecommendationItem(
                 title=row["name"],
                 platform=getattr(game, "platforms", None) if game else None,
                 price_eur=float(price) if price is not None else None,
                 total_score=row.get("total_score"),
-                match_reasons=[],
+                match_reasons=match_reasons,
             )
         )
 
     return RecommendationResponse(recommendations=recommendations)
+
+
+def _build_match_reasons(
+    row: dict[str, Any],
+    game: Games | None,
+    request: RecommendationRequest,
+) -> list[str]:
+    """Build detailed, human-readable reasons for a recommendation."""
+    reasons: list[str] = []
+
+    weights = row.get("score_weights") or {}
+    if weights:
+        weight_parts = ", ".join(
+            f"{key}={value:.2f}"
+            for key, value in sorted(weights.items())
+        )
+        reasons.append(f"Weighted total score: {row.get('total_score', 0):.3f} (weights: {weight_parts})")
+
+    genres = getattr(game, "genres", "") if game else ""
+    if genres:
+        reasons.append(f"Genre affinity score: {row.get('genre_score', 0):.3f} | genres: {genres}")
+    else:
+        reasons.append(f"Genre affinity score: {row.get('genre_score', 0):.3f}")
+
+    if "preferred_genres" in weights:
+        preferred_genres = ", ".join(request.preferred_genres) if request.preferred_genres else "-"
+        reasons.append(
+            "Preferred-genre score: "
+            f"{row.get('preferred_genre_score', 0):.3f} | preferred: {preferred_genres}"
+        )
+
+    reasons.append(
+        f"Library description similarity: {row.get('description_score', 0):.3f}"
+    )
+
+    if request.query_text:
+        reasons.append(
+            f"Query description similarity: {row.get('query_description_score', 0):.3f}"
+        )
+
+    recommendations = row.get("recommendations", 0)
+    reasons.append(
+        "Community recommendations score: "
+        f"{row.get('recommendations_score', 0):.3f} | total: {recommendations}"
+    )
+
+    if request.max_release_age_years is not None:
+        cutoff = _safe_subtract_years(date.today(), request.max_release_age_years)
+        release_raw = getattr(game, "release_date", "") if game else ""
+        parsed = _parse_release_date_value(release_raw)
+        release_display = parsed.isoformat() if parsed else (release_raw or "unknown")
+        reasons.append(f"Release date: {release_display} | cutoff: {cutoff.isoformat()}")
+
+    return reasons
