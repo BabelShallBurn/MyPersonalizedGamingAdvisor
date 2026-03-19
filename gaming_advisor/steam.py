@@ -7,21 +7,18 @@ It does not read from or write to the local database.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 
-from logging_config import configure_logging
+from gaming_advisor.config import STEAM_API_KEY
+from gaming_advisor.logging_config import configure_logging
 
 configure_logging()
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 STEAM_APP_LIST_URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 APP_INFO_URL = "https://store.steampowered.com/api/appdetails"
@@ -35,7 +32,7 @@ class SteamClient:
     """Thin Steam API client for catalog endpoints."""
 
     def __init__(self, api_key: str | None = None, timeout: int = 10) -> None:
-        self.api_key = api_key or os.getenv("STEAM_API_KEY")
+        self.api_key = api_key or STEAM_API_KEY
         if not self.api_key:
             raise ValueError("STEAM_API_KEY Umgebungsvariable ist nicht gesetzt.")
 

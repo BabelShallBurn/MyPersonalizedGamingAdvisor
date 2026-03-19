@@ -11,7 +11,6 @@ The scorer combines up to five signals:
 from __future__ import annotations
 
 import math
-import os
 from collections import Counter
 from hashlib import sha256
 from typing import Any
@@ -26,18 +25,24 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sqlmodel import Session, select
 
-from database.data_handling import engine
-from database.db import GameEmbedding, Games, UserGames
-from schemas.recommendations import (
+from gaming_advisor.config import (
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_MAX_TOKENS,
+    EMBEDDING_MODEL,
+    RERANK_TOP_N,
+)
+from gaming_advisor.db.engine import engine
+from gaming_advisor.db.models import GameEmbedding, Games, UserGames
+from gaming_advisor.schemas.recommendations import (
     RecommendationItem,
     RecommendationRequest,
     RecommendationResponse,
 )
 
-_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-_EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "128"))
-_EMBEDDING_MAX_TOKENS = int(os.getenv("EMBEDDING_MAX_TOKENS", "8000"))
-_RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "200"))
+_EMBEDDING_MODEL = EMBEDDING_MODEL
+_EMBEDDING_BATCH_SIZE = EMBEDDING_BATCH_SIZE
+_EMBEDDING_MAX_TOKENS = EMBEDDING_MAX_TOKENS
+_RERANK_TOP_N = RERANK_TOP_N
 
 _QUERY_GENRE_KEYWORDS = {
     "platformer": {"platformer", "platform", "jump and run", "jump'n'run", "jump n run"},
@@ -55,10 +60,24 @@ _QUERY_GENRE_KEYWORDS = {
 
 
 def _get_openai_client() -> OpenAI:
+    """Create an OpenAI client instance.
+
+    Returns:
+        OpenAI client configured from environment variables.
+    """
     return OpenAI()
 
 
 def _truncate_texts(texts: list[str], max_tokens: int) -> list[str]:
+    """Truncate texts to a maximum token count.
+
+    Args:
+        texts: Input texts to truncate.
+        max_tokens: Maximum number of tokens to keep per text.
+
+    Returns:
+        List of truncated texts in the original order.
+    """
     if not texts:
         return []
     if max_tokens <= 0:
@@ -76,6 +95,17 @@ def _truncate_texts(texts: list[str], max_tokens: int) -> list[str]:
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a list of texts using the configured OpenAI model.
+
+    Args:
+        texts: List of non-empty texts to embed.
+
+    Returns:
+        List of embedding vectors in the same order as inputs.
+
+    Raises:
+        ValueError: If any input text is empty after stripping.
+    """
     if not texts:
         return []
     normalized = [text.strip() for text in texts]
@@ -97,6 +127,15 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
 
 
 def _description_hash(text: str, model: str) -> str:
+    """Create a stable hash for a description and model pair.
+
+    Args:
+        text: Description text.
+        model: Embedding model identifier.
+
+    Returns:
+        Hex digest string for the description and model.
+    """
     payload = f"{model}::{text}".encode("utf-8")
     return sha256(payload).hexdigest()
 
@@ -106,6 +145,16 @@ def _get_candidate_embeddings(
     candidates: list[Games],
     embedding_dim: int,
 ) -> np.ndarray:
+    """Fetch or compute embeddings for candidate games.
+
+    Args:
+        session: Active database session.
+        candidates: Candidate games to embed.
+        embedding_dim: Expected embedding dimensionality.
+
+    Returns:
+        NumPy array of embeddings aligned with the candidates list.
+    """
     candidate_ids = [game.id for game in candidates if game.id is not None]
     if not candidate_ids:
         return np.zeros((len(candidates), embedding_dim), dtype=float)
@@ -162,22 +211,45 @@ def _get_candidate_embeddings(
             embeddings_out.append(row.embedding)
     return np.asarray(embeddings_out, dtype=float)
 
+
 def _parse_genres(raw_genres: str | None) -> list[str]:
-    """Split CSV-like genres into normalized tokens."""
+    """Split CSV-like genres into normalized tokens.
+
+    Args:
+        raw_genres: Comma-separated genre string.
+
+    Returns:
+        Normalized genre tokens.
+    """
     if not raw_genres:
         return []
     return [genre.strip().lower() for genre in raw_genres.split(",") if genre.strip()]
 
 
 def _normalize_counter(values: Counter[str]) -> dict[str, float]:
-    """Normalize counter values to sum to 1.0."""
+    """Normalize counter values to sum to 1.0.
+
+    Args:
+        values: Counter to normalize.
+
+    Returns:
+        Dictionary of normalized weights.
+    """
     total = sum(values.values())
     if total <= 0:
         return {}
     return {key: value / total for key, value in values.items()}
 
+
 def _normalize_genre_preferences(preferred_genres: list[str] | None) -> dict[str, float]:
-    """Normalize user-provided preferred genres to weights."""
+    """Normalize user-provided preferred genres to weights.
+
+    Args:
+        preferred_genres: Raw genre labels provided by the user.
+
+    Returns:
+        Normalized genre weights.
+    """
     if not preferred_genres:
         return {}
     normalized = [genre.strip().lower() for genre in preferred_genres if genre.strip()]
@@ -185,7 +257,16 @@ def _normalize_genre_preferences(preferred_genres: list[str] | None) -> dict[str
         return {}
     return _normalize_counter(Counter(normalized))
 
+
 def _infer_query_genre_filters(query_text: str) -> set[str]:
+    """Infer genre filters based on keywords in query text.
+
+    Args:
+        query_text: Free-form user query.
+
+    Returns:
+        Set of inferred genre tokens.
+    """
     text = query_text.lower()
     inferred: set[str] = set()
     for genre, keywords in _QUERY_GENRE_KEYWORDS.items():
@@ -209,12 +290,15 @@ def recommend_games_for_user(
         top_k: Number of recommendations to return.
         preferred_genres: Optional user-provided preferred genres.
         query_text: Optional free-form query text from the user.
-        weights: Optional weights for signals. Keys:
+        weights: Optional weights for signals. Keys include:
             - genre
             - preferred_genres
             - description
             - query_description
             - recommendations
+
+    Returns:
+        List of scored recommendation dictionaries.
     """
     if engine is None:
         return []
@@ -393,7 +477,15 @@ def recommend_games_for_user(
 
 
 def parse_recommendation_request(user_text: str, llm: Any) -> RecommendationRequest:
-    """Parse free-form user text into a structured recommendation request."""
+    """Parse free-form user text into a structured recommendation request.
+
+    Args:
+        user_text: Raw user input.
+        llm: LLM instance used for parsing.
+
+    Returns:
+        Structured recommendation request.
+    """
     parser = PydanticOutputParser(pydantic_object=RecommendationRequest)
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -413,7 +505,16 @@ def parse_recommendation_request(user_text: str, llm: Any) -> RecommendationRequ
 def recommend_for_user_request(
     user_id: int, request: RecommendationRequest, *, top_k: int | None = None
 ) -> RecommendationResponse:
-    """Run the recommender for a parsed request and shape the response payload."""
+    """Run the recommender for a parsed request and shape the response payload.
+
+    Args:
+        user_id: User ID to score recommendations for.
+        request: Parsed recommendation request.
+        top_k: Optional override for the number of results.
+
+    Returns:
+        Recommendation response payload.
+    """
     k = top_k or request.top_k or 10
     scored = recommend_games_for_user(
         user_id,

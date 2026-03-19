@@ -1,7 +1,8 @@
+"""Precompute and cache game description embeddings in the database."""
+
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -11,9 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from database.data_handling import engine
-from database.db import GameEmbedding, Games
-from recommender import _description_hash, _embed_texts
+from gaming_advisor.db.engine import engine
+from gaming_advisor.db.models import GameEmbedding, Games
+from gaming_advisor.config import EMBEDDING_MODEL
+from gaming_advisor.recommender.scorer import _description_hash, _embed_texts
 
 
 def _upsert_embeddings(
@@ -21,6 +23,16 @@ def _upsert_embeddings(
     games: list[Games],
     model: str,
 ) -> tuple[int, int]:
+    """Upsert embeddings for a batch of games.
+
+    Args:
+        session: Active database session.
+        games: Batch of games to process.
+        model: Embedding model identifier.
+
+    Returns:
+        Tuple of (upserted_count, skipped_empty_count).
+    """
     game_ids = [game.id for game in games if game.id is not None]
     if not game_ids:
         return 0, 0
@@ -72,6 +84,7 @@ def _upsert_embeddings(
 
 
 def main() -> None:
+    """Run the embedding precompute CLI."""
     parser = argparse.ArgumentParser(description="Precompute game embeddings.")
     parser.add_argument("--batch-size", type=int, default=500)
     args = parser.parse_args()
@@ -80,7 +93,7 @@ def main() -> None:
         print("No DB connection.")
         return
 
-    model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    model = EMBEDDING_MODEL
     batch_size = max(args.batch_size, 1)
 
     total_embedded = 0

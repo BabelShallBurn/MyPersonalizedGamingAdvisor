@@ -3,43 +3,27 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections import Counter
 from decimal import Decimal
 
-from dotenv import load_dotenv
 from pydantic import ValidationError
 from sqlalchemy import text
-from sqlalchemy.exc import ArgumentError, IntegrityError, OperationalError, SQLAlchemyError
-from sqlmodel import SQLModel, Session, create_engine, select
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
+from sqlmodel import SQLModel, Session, select
 
-from database.db import GameSystemRequirement, Games, User, UserGames
-from schemas.db import GameIn, UserCreate, UserUpdate
-from logging_config import configure_logging
+from gaming_advisor.db.engine import engine
+from gaming_advisor.db.models import GameSystemRequirement, Games, User, UserGames
+from gaming_advisor.schemas.db import GameIn, UserCreate, UserUpdate
 
-configure_logging()
 logger = logging.getLogger(__name__)
-
-load_dotenv()
-DB_URL = os.getenv("DATABASE_URL")
-
-if DB_URL is None:
-    raise ValueError("DATABASE_URL Umgebungsvariable ist nicht gesetzt.")
-
-try:
-    engine = create_engine(DB_URL, echo=False)
-    with engine.connect():
-        logger.info("Database connection established successfully.")
-except OperationalError as e:
-    logger.error("Error connecting to database: %s", e)
-    engine = None
-except (ArgumentError, SQLAlchemyError) as e:
-    logger.error("Unexpected error creating database engine: %s", e)
-    engine = None
 
 
 def create_tables() -> None:
-    """Create all tables registered in SQLModel metadata."""
+    """Create all tables registered in SQLModel metadata.
+
+    Returns:
+        None.
+    """
     if engine is not None:
         try:
             SQLModel.metadata.create_all(engine)
@@ -51,7 +35,14 @@ def create_tables() -> None:
 
 
 def get_user_by_email(email: str) -> User | None:
-    """Return a user by email address."""
+    """Return a user by email address.
+
+    Args:
+        email: Email address to search for.
+
+    Returns:
+        The matching user, or None if not found or invalid.
+    """
     if engine is None:
         logger.error("Engine not available.")
         return None
@@ -65,7 +56,11 @@ def get_user_by_email(email: str) -> User | None:
 
 
 def drop_all_tables() -> bool:
-    """Drop all tables registered in SQLModel metadata."""
+    """Drop all tables registered in SQLModel metadata.
+
+    Returns:
+        True if tables were dropped successfully; otherwise False.
+    """
     if engine is None:
         logger.error("Engine could not be created; tables cannot be dropped.")
         return False
@@ -79,7 +74,14 @@ def drop_all_tables() -> bool:
 
 
 def save_game_details(app_details: dict) -> bool:
-    """Store normalized Steam game details in the ``Games`` table."""
+    """Store normalized Steam game details in the ``Games`` table.
+
+    Args:
+        app_details: Raw Steam game details payload.
+
+    Returns:
+        True if the game details were saved; otherwise False.
+    """
     if engine is None:
         logger.error("Engine could not be initialized.")
         return False
@@ -144,7 +146,18 @@ def add_game_to_user_library(
     rating: int | None = None,
     playtime_hours: Decimal | float | int = Decimal("0.0"),
 ) -> bool:
-    """Add a game to a user's library, or update existing relation."""
+    """Add a game to a user's library, or update existing relation.
+
+    Args:
+        user_id: ID of the user.
+        game_id: ID of the game.
+        status: Ownership status.
+        rating: Optional rating.
+        playtime_hours: Playtime in hours.
+
+    Returns:
+        True if the library entry was added or updated; otherwise False.
+    """
     if engine is None:
         logger.error("Engine not available.")
         return False
@@ -186,7 +199,15 @@ def add_game_to_user_library(
 
 
 def remove_game_from_user_library(user_id: int, game_id: int) -> bool:
-    """Remove a game from a user's library."""
+    """Remove a game from a user's library.
+
+    Args:
+        user_id: ID of the user.
+        game_id: ID of the game to remove.
+
+    Returns:
+        True if the entry was removed; otherwise False.
+    """
     if engine is None:
         logger.error("Engine not available.")
         return False
@@ -205,7 +226,14 @@ def remove_game_from_user_library(user_id: int, game_id: int) -> bool:
 
 
 def get_user_library(user_id: int) -> list[dict]:
-    """Return a user's manually maintained library with game metadata."""
+    """Return a user's manually maintained library with game metadata.
+
+    Args:
+        user_id: ID of the user.
+
+    Returns:
+        List of library entries with game metadata.
+    """
     if engine is None:
         logger.error("Engine not available.")
         return []
@@ -235,7 +263,15 @@ def get_user_library(user_id: int) -> list[dict]:
 
 
 def get_top_library_genres(user_id: int, limit: int = 5) -> list[str]:
-    """Derive dominant genres from a user's manually maintained library."""
+    """Derive dominant genres from a user's manually maintained library.
+
+    Args:
+        user_id: ID of the user.
+        limit: Maximum number of genres to return.
+
+    Returns:
+        List of top genres by frequency.
+    """
     library_rows = get_user_library(user_id)
     genre_counts: Counter[str] = Counter()
 
@@ -250,7 +286,18 @@ def get_top_library_genres(user_id: int, limit: int = 5) -> list[str]:
 
 
 def create_user(name: str, email: str, language: str, age: int, platform: str) -> User | None:
-    """Create a new user and return the persisted record."""
+    """Create a new user and return the persisted record.
+
+    Args:
+        name: User name.
+        email: User email address.
+        language: Preferred language code.
+        age: User age.
+        platform: Preferred gaming platform.
+
+    Returns:
+        The created user, or None if validation/persistence fails.
+    """
     if engine is None:
         logger.error("Engine not available.")
         return None
@@ -282,7 +329,15 @@ def create_user(name: str, email: str, language: str, age: int, platform: str) -
 
 
 def update_user(user_id: int, **updates) -> User | None:
-    """Update allowed user fields by user ID."""
+    """Update allowed user fields by user ID.
+
+    Args:
+        user_id: ID of the user.
+        **updates: User fields to update.
+
+    Returns:
+        The updated user, or None if not found or invalid.
+    """
     if engine is None:
         logger.error("Engine not available.")
         return None
@@ -312,7 +367,14 @@ def update_user(user_id: int, **updates) -> User | None:
 
 
 def delete_user(user_id: int) -> bool:
-    """Delete a user by ID."""
+    """Delete a user by ID.
+
+    Args:
+        user_id: ID of the user.
+
+    Returns:
+        True if the user was deleted; otherwise False.
+    """
     if engine is None:
         logger.error("Engine not available.")
         return False
@@ -330,7 +392,15 @@ def delete_user(user_id: int) -> bool:
 
 
 def reset_table(engine, table_name: str) -> None:
-    """Truncate a table and reset its identity counter."""
+    """Truncate a table and reset its identity counter.
+
+    Args:
+        engine: SQLAlchemy engine to use.
+        table_name: Name of the table to truncate.
+
+    Returns:
+        None.
+    """
     with engine.begin() as conn:
         conn.execute(text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE"))
 
