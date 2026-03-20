@@ -30,6 +30,26 @@ def _get_user_by_email(session: Session, email: str) -> User | None:
     return session.exec(select(User).where(User.email == email)).first()
 
 
+def _delete_user_by_email(email: str) -> bool:
+    """Delete a user by email address.
+
+    Args:
+        email: Email address to delete.
+
+    Returns:
+        True if a user was deleted; otherwise False.
+    """
+    if engine is None:
+        return False
+    with Session(engine) as session:
+        user = _get_user_by_email(session, email)
+        if user is None:
+            return False
+        session.delete(user)
+        session.commit()
+        return True
+
+
 def _prompt_non_empty(prompt: str, *, default: str | None = None) -> str:
     """Prompt until a non-empty response is provided.
 
@@ -75,7 +95,29 @@ def _prompt_int(prompt: str, *, default: int | None = None, min_value: int | Non
         return value
 
 
-def _prompt_email() -> str:
+def _prompt_yes_no(prompt: str, *, default: bool = False) -> bool:
+    """Prompt for a yes/no answer.
+
+    Args:
+        prompt: Prompt text shown to the user.
+        default: Default value when the user presses Enter.
+
+    Returns:
+        True for yes, False for no.
+    """
+    suffix = " [Y/n] " if default else " [y/N] "
+    while True:
+        raw = input(prompt + suffix).strip().lower()
+        if not raw:
+            return default
+        if raw in {"y", "yes", "j", "ja"}:
+            return True
+        if raw in {"n", "no", "nein"}:
+            return False
+        print("Please answer yes or no.")
+
+
+def _prompt_email(*, allow_delete: bool = False) -> str:
     """Prompt for an email address with optional env fallback.
 
     Returns:
@@ -83,11 +125,15 @@ def _prompt_email() -> str:
     """
     default = TEST_USER_EMAIL
     prompt = "Please enter your email"
+    if allow_delete:
+        prompt += " (or type 'delete' to remove a user)"
     if default:
         prompt += f" (press Enter for {default})"
     prompt += ": "
     while True:
         raw = input(prompt).strip()
+        if allow_delete and raw.lower() in {"delete", "del"}:
+            return "delete"
         if raw:
             return raw
         if default:
@@ -107,27 +153,33 @@ def _get_or_create_user(email: str) -> User | None:
     if engine is None:
         return None
     with Session(engine) as session:
-        user = _get_user_by_email(session, email)
-        if user is not None:
-            return user
+        current_email = email
+        while True:
+            user = _get_user_by_email(session, current_email)
+            if user is not None:
+                return user
 
-        print("No user found. Let's create your profile.")
-        name = _prompt_non_empty("Name: ")
-        language = _prompt_non_empty("Language (e.g. en): ", default="en")
-        age = _prompt_int("Age: ", min_value=0)
-        platform = _prompt_non_empty("Platform (e.g. PC): ", default="PC")
+            print(f"No user found for {current_email}.")
+            should_create = _prompt_yes_no("Create a new profile?")
+            if should_create:
+                name = _prompt_non_empty("Name: ")
+                language = _prompt_non_empty("Language (e.g. en): ", default="en")
+                age = _prompt_int("Age: ", min_value=0)
+                platform = _prompt_non_empty("Platform (e.g. PC): ", default="PC")
 
-        user = User(
-            name=name,
-            email=email,
-            language=language,
-            age=age,
-            platform=platform,
-        )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        return user
+                user = User(
+                    name=name,
+                    email=current_email,
+                    language=language,
+                    age=age,
+                    platform=platform,
+                )
+                session.add(user)
+                session.commit()
+                session.refresh(user)
+                return user
+
+            current_email = _prompt_non_empty("Enter a different email: ")
 
 
 
@@ -294,7 +346,19 @@ def main() -> None:
         print("No DB connection.")
         return
 
-    user_email = _prompt_email()
+    while True:
+        user_email = _prompt_email(allow_delete=True)
+        if user_email.lower() in {"delete", "del"}:
+            target_email = _prompt_non_empty("Email to delete: ")
+            if _prompt_yes_no(f"Delete user {target_email}?"):
+                if _delete_user_by_email(target_email):
+                    print(f"Deleted user: {target_email}")
+                else:
+                    print(f"No user found: {target_email}")
+            else:
+                print("Deletion cancelled.")
+            continue
+        break
     user = _get_or_create_user(user_email)
     if user is None or user.id is None:
         print(f"No user found: {user_email}")
