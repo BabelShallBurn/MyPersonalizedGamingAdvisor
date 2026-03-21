@@ -289,6 +289,35 @@ def _print_library(entries: list[dict[str, Any]]) -> None:
         print(f"- {entry.get('name', 'Unknown')} ({', '.join(details)})")
 
 
+def _print_profile_update_result(
+    *,
+    message: str | None,
+    updated_fields: list[str] | None,
+    updated_games: list[str] | None,
+    removed_games: list[str] | None,
+    skipped_games: list[str] | None,
+) -> None:
+    """Print profile update results to stdout."""
+    if message:
+        print(message)
+    if updated_fields:
+        print("Updated profile fields:")
+        for field in updated_fields:
+            print(f"- {field}")
+    if updated_games:
+        print("Updated games:")
+        for title in updated_games:
+            print(f"- {title}")
+    if removed_games:
+        print("Removed games:")
+        for title in removed_games:
+            print(f"- {title}")
+    if skipped_games:
+        print("Skipped:")
+        for title in skipped_games:
+            print(f"- {title}")
+
+
 def chat_session(user: User, llm: ChatOpenAI) -> None:
     """Run an interactive chat session for a single user.
 
@@ -326,6 +355,23 @@ def chat_session(user: User, llm: ChatOpenAI) -> None:
 
         if result.kind == "library_list":
             _print_library(result.library_entries or [])
+            continue
+
+        if result.kind == "profile_updated":
+            _print_profile_update_result(
+                message=result.message,
+                updated_fields=result.updated_fields,
+                updated_games=result.updated_games,
+                removed_games=result.removed_games,
+                skipped_games=result.skipped_games,
+            )
+            continue
+
+        if result.kind == "library_query":
+            if result.message:
+                print(result.message)
+            else:
+                print("No details found for that game.")
             continue
 
         if result.kind == "recommendations":

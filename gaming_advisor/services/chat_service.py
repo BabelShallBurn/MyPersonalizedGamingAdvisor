@@ -8,12 +8,17 @@ from typing import Any, Callable, Literal
 from sqlmodel import Session, select
 
 from gaming_advisor.db.engine import engine
-from gaming_advisor.db.data_handling import get_user_library
+from gaming_advisor.db.data_handling import get_user_library, update_user
 from gaming_advisor.db.models import Games, UserGames
 from gaming_advisor.llm.routing import (
+    LibraryQuery,
+    LibraryUpdate,
     OwnedGame,
     OwnedGamesRequest,
+    ProfileUpdateRequest,
+    parse_library_query,
     parse_owned_games,
+    parse_profile_update,
     route_user_text,
 )
 from gaming_advisor.recommender import parse_recommendation_request, recommend_for_user_request
@@ -37,15 +42,22 @@ class ChatResult:
     kind: Literal[
         "clarify",
         "owned_games_saved",
+        "profile_updated",
         "recommendations",
         "library_list",
+        "library_query",
         "error",
         "unknown",
     ]
     message: str | None = None
     saved_titles: list[str] | None = None
+    updated_fields: list[str] | None = None
+    updated_games: list[str] | None = None
+    removed_games: list[str] | None = None
+    skipped_games: list[str] | None = None
     recommendations: RecommendationResponse | None = None
     library_entries: list[dict[str, Any]] | None = None
+    library_query: dict[str, Any] | None = None
 
 
 def handle_user_message(
@@ -104,6 +116,36 @@ def handle_user_message(
     if intent == "library_list":
         library_entries = get_user_library(user_id)
         return ChatResult(kind="library_list", library_entries=library_entries)
+
+    if intent == "profile_update":
+        try:
+            profile_request = parse_profile_update(user_text, llm)
+        except Exception:
+            return ChatResult(
+                kind="error",
+                message="Couldn't parse the update request. Please be more specific.",
+            )
+
+        if not profile_request.has_updates():
+            return ChatResult(
+                kind="error",
+                message="No updates recognized. Please specify what to change.",
+            )
+
+        result = _apply_profile_update(user_id, profile_request, resolve_game)
+        return ChatResult(kind="profile_updated", **result)
+
+    if intent == "library_query":
+        try:
+            library_query = parse_library_query(user_text, llm)
+        except Exception:
+            return ChatResult(
+                kind="error",
+                message="Couldn't parse the library question. Please be more specific.",
+            )
+
+        result = _handle_library_query(user_id, library_query, resolve_game)
+        return ChatResult(kind="library_query", **result)
 
     return ChatResult(
         kind="unknown",
@@ -173,3 +215,158 @@ def _upsert_user_game(
         )
     )
     return True
+
+
+def _apply_profile_update(
+    user_id: int,
+    profile_request: ProfileUpdateRequest,
+    resolve_game: GameResolver,
+) -> dict[str, Any]:
+    updated_fields: list[str] = []
+    updated_games: list[str] = []
+    removed_games: list[str] = []
+    skipped_games: list[str] = []
+    message: str | None = None
+
+    user_updates = {
+        key: value
+        for key, value in {
+            "name": profile_request.name,
+            "email": profile_request.email,
+            "language": profile_request.language,
+            "age": profile_request.age,
+            "platform": profile_request.platform,
+        }.items()
+        if value is not None
+    }
+
+    if user_updates:
+        updated_user = update_user(user_id, **user_updates)
+        if updated_user is None:
+            message = "Profile update failed."
+        else:
+            updated_fields = list(user_updates.keys())
+
+    if profile_request.library_updates:
+        if engine is None:
+            return {
+                "message": "No database connection.",
+                "updated_fields": updated_fields,
+                "updated_games": updated_games,
+                "removed_games": removed_games,
+                "skipped_games": skipped_games,
+            }
+        with Session(engine) as session:
+            for update in profile_request.library_updates:
+                _apply_library_update(
+                    session=session,
+                    user_id=user_id,
+                    update=update,
+                    resolve_game=resolve_game,
+                    updated_games=updated_games,
+                    removed_games=removed_games,
+                    skipped_games=skipped_games,
+                )
+            session.commit()
+
+    return {
+        "message": message,
+        "updated_fields": updated_fields,
+        "updated_games": updated_games,
+        "removed_games": removed_games,
+        "skipped_games": skipped_games,
+    }
+
+
+def _apply_library_update(
+    *,
+    session: Session,
+    user_id: int,
+    update: LibraryUpdate,
+    resolve_game: GameResolver,
+    updated_games: list[str],
+    removed_games: list[str],
+    skipped_games: list[str],
+) -> None:
+    game = resolve_game(session, update.title)
+    if game is None or game.id is None:
+        skipped_games.append(update.title)
+        return
+
+    relation = session.get(UserGames, (user_id, game.id))
+
+    if update.action == "remove":
+        if relation is None:
+            skipped_games.append(game.game_name)
+            return
+        session.delete(relation)
+        removed_games.append(game.game_name)
+        return
+
+    changed = False
+    if relation is None:
+        relation = UserGames(
+            user_id=user_id,
+            game_id=game.id,
+            status=update.status or "owned",
+            rating=update.rating,
+            playtime_hours=update.playtime_hours or 0.0,
+        )
+        session.add(relation)
+        updated_games.append(game.game_name)
+        return
+
+    if update.status:
+        relation.status = update.status
+        changed = True
+    if update.rating is not None:
+        relation.rating = update.rating
+        changed = True
+    if update.playtime_hours is not None:
+        relation.playtime_hours = update.playtime_hours
+        changed = True
+
+    if changed:
+        updated_games.append(game.game_name)
+    else:
+        skipped_games.append(game.game_name)
+
+
+def _handle_library_query(
+    user_id: int,
+    library_query: LibraryQuery,
+    resolve_game: GameResolver,
+) -> dict[str, Any]:
+    if engine is None:
+        return {"message": "No database connection."}
+
+    with Session(engine) as session:
+        game = resolve_game(session, library_query.title)
+        if game is None or game.id is None:
+            return {"message": f"No match for '{library_query.title}' in your library."}
+
+        relation = session.get(UserGames, (user_id, game.id))
+        if relation is None:
+            return {"message": f"{game.game_name} is not in your library."}
+
+        fields = library_query.fields or ["status", "rating", "playtime"]
+        response_parts: list[str] = []
+
+        if "status" in fields:
+            response_parts.append(f"Status: {relation.status}")
+        if "rating" in fields:
+            rating = relation.rating
+            response_parts.append("Rating: not set" if rating is None else f"Rating: {rating}/10")
+        if "playtime" in fields:
+            response_parts.append(f"Playtime: {float(relation.playtime_hours):.1f}h")
+
+        message = f"{game.game_name}: " + ", ".join(response_parts)
+        return {
+            "message": message,
+            "library_query": {
+                "name": game.game_name,
+                "status": relation.status,
+                "rating": relation.rating,
+                "playtime_hours": float(relation.playtime_hours),
+            },
+        }
