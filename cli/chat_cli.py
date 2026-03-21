@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import sys
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from langchain_openai import ChatOpenAI
 from sqlmodel import Session, select
+from sqlalchemy import or_
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -195,13 +198,71 @@ def _find_game_candidates(session: Session, title: str, *, limit: int = 5) -> li
     Returns:
         Candidate games ordered by recommendation volume.
     """
+    normalized = title.strip()
+    if not normalized:
+        return []
+
     stmt = (
         select(Games)
-        .where(Games.game_name.ilike(f"%{title}%"))
+        .where(Games.game_name.ilike(f"%{normalized}%"))
         .order_by(Games.recommendations.desc())
         .limit(limit)
     )
-    return session.exec(stmt).all()
+    matches = session.exec(stmt).all()
+    if matches:
+        return matches
+
+    tokens = _tokenize_title(normalized)
+    if not tokens:
+        return []
+
+    conditions = [Games.game_name.ilike(f"%{token}%") for token in tokens]
+    candidate_limit = max(limit * 4, 20)
+    stmt = (
+        select(Games)
+        .where(or_(*conditions))
+        .order_by(Games.recommendations.desc())
+        .limit(candidate_limit)
+    )
+    candidates = session.exec(stmt).all()
+    if not candidates:
+        return []
+
+    return _rank_candidates(normalized, candidates, limit)
+
+
+def _normalize_title(value: str) -> str:
+    """Normalize titles for fuzzy matching."""
+    lowered = value.casefold()
+    cleaned = re.sub(r"[^a-z0-9]+", " ", lowered)
+    return " ".join(cleaned.split())
+
+
+def _tokenize_title(value: str) -> list[str]:
+    """Tokenize title to support fallback queries."""
+    normalized = _normalize_title(value)
+    tokens = [token for token in normalized.split() if len(token) >= 3]
+    seen: set[str] = set()
+    unique_tokens: list[str] = []
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        unique_tokens.append(token)
+    return unique_tokens
+
+
+def _rank_candidates(query: str, candidates: list[Games], limit: int) -> list[Games]:
+    """Rank candidates by fuzzy similarity and recommendations."""
+    normalized_query = _normalize_title(query)
+    scored: list[tuple[float, int, Games]] = []
+    for game in candidates:
+        normalized_game = _normalize_title(game.game_name)
+        similarity = SequenceMatcher(None, normalized_query, normalized_game).ratio()
+        scored.append((similarity, game.recommendations or 0, game))
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [game for _, __, game in scored[:limit]]
 
 
 def _resolve_game(session: Session, title: str) -> Games | None:
