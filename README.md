@@ -1,117 +1,140 @@
 # YourPersonalizedGamingAdvisor
 
-## Beschreibung
-
-YourPersonalizedGamingAdvisor ist eine Python-Anwendung, die es Benutzern ermöglicht, ihre persönliche Videospielebibliothek in einer PostgreSQL-Datenbank zu verwalten und personalisierte Empfehlungen zu erhalten. Benutzer können Spiele mit Details wie Name, Genre, Altersfreigabe und Systemanforderungen speichern. Basierend auf der vorhandenen Bibliothek generiert die Anwendung passende Vorschläge.
-
-Das Projekt integriert Daten aus Steam über die Steam-API, um zusätzliche Informationen zu Spielen zu sammeln und Empfehlungen zu verbessern. Zusätzlich gibt es eine CLI für die interaktive Beratung.
+YourPersonalizedGamingAdvisor is a Python application for managing a personal game library in PostgreSQL and getting tailored recommendations through a CLI chat. It combines library signals (genres, descriptions, playtime, ratings) with catalog popularity and optional embedding-based similarity for richer suggestions.
 
 ## Features
 
-- **Spielebibliothek verwalten**: Fügen Sie Spiele hinzu, bearbeiten und entfernen Sie Einträge in Ihrer persönlichen Bibliothek.
-- **Detaillierte Spielinformationen**: Speichern Sie Metadaten wie Genre, Altersfreigabe, Systemanforderungen und mehr.
-- **Personalisierte Empfehlungen**: Erhalten Sie Vorschläge für neue Spiele basierend auf Ihren gespeicherten Titeln.
-- **Steam-Integration**: Automatische Abfrage von Spielinformationen über die Steam-API.
-- **CLI-Chat**: Interaktiver Chat für Empfehlungen und Bibliotheksverwaltung.
-- **PostgreSQL-Datenbank**: Robuste Datenspeicherung für Benutzerdaten und Spieleinformationen.
+- Manage a personal library with status, rating, and playtime
+- CLI chat to add games, update profile data, and request recommendations
+- Recommendation scoring based on genres, TF-IDF description similarity, and Steam recommendation volume
+- Optional OpenAI embeddings for query-to-description similarity
+- Steam API integration module for enriching the game catalog
+- PostgreSQL storage with pgvector for embeddings
 
-## Technologien
+## Requirements
 
-- **Backend**: Python
-- **Datenbank**: PostgreSQL
-- **ORM**: SQLModel, SQLAlchemy
-- **API-Integration**: Steam Web API
-- **Entwicklungsumgebung**: Python 3.8+, Jupyter Notebook für Prototyping
+- Python 3.10+
+- PostgreSQL (with the `pgvector` extension)
+- OpenAI API key for chat and embeddings
+- Steam API key if you want to fetch data from Steam
 
-## Voraussetzungen
+## Quick Start
 
-- Python 3.8 oder höher
-- PostgreSQL-Datenbank
-- Steam API Key (für Steam-Integration)
-
-## Installation
-
-1. **Repository klonen**:
+1. Clone the repository and create a virtual environment:
    ```bash
    git clone https://github.com/yourusername/YourPersonalizedGamingAdvisor.git
    cd YourPersonalizedGamingAdvisor
-   ```
-
-2. **Virtuelle Umgebung erstellen und aktivieren**:
-   ```bash
    python -m venv venv
-   source venv/bin/activate  # Auf Windows: venv\Scripts\activate
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-3. **Abhängigkeiten installieren**:
+2. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Umgebungsvariablen konfigurieren**:
-   Erstellen Sie eine `.env`-Datei im Projektverzeichnis mit folgenden Variablen:
-   ```
+3. Create a `.env` file in the project root:
+   ```env
    DATABASE_URL=postgresql://username:password@localhost:5432/gaming_advisor
-   STEAM_API_KEY=your_steam_api_key_here
+   OPENAI_API_KEY=your_openai_api_key
+   STEAM_API_KEY=your_steam_api_key  # optional
+   TEST_USER_EMAIL=you@example.com   # optional default for the CLI prompt
    ```
 
-## Datenbank-Setup
-
-1. **PostgreSQL installieren und starten** (falls nicht bereits geschehen).
-
-2. **Datenbank erstellen**:
+4. Prepare the database (run once):
    ```sql
    CREATE DATABASE gaming_advisor;
+   CREATE EXTENSION IF NOT EXISTS vector;
    ```
 
-3. **Tabellen initialisieren**:
-   Führen Sie die Tabellenerstellung aus:
+5. Create tables:
    ```bash
    python create_tables.py
    ```
 
-4. **Embedding-Tabelle erstellen** (optional, falls empfohlen/benötigt):
-   ```bash
-   python create_game_embedding_table.py
-   ```
+6. Load game data into the `games` table (see "Loading Game Data" below).
 
-## Verwendung
-
-1. **CLI-Chat starten**:
-   ```bash
-   python -m cli.chat_cli
-   ```
-2. **Embeddings vorab berechnen** (optional, kann Initiallauf beschleunigen):
+7. (Optional) Precompute embeddings for faster query matching:
    ```bash
    python scripts/precompute_game_embeddings.py --batch-size 500
    ```
 
-## Projektstruktur (Auszug)
+8. Start the CLI chat:
+   ```bash
+   python -m cli.chat_cli
+   ```
+
+## Configuration
+
+Environment variables loaded via `python-dotenv`:
+
+- `DATABASE_URL` (required): PostgreSQL connection string. Importing DB modules without this will raise an error.
+- `OPENAI_API_KEY` (required for chat and embeddings)
+- `STEAM_API_KEY` (required only for Steam API calls)
+- `TEST_USER_EMAIL` (optional, used as the default CLI email)
+- `EMBEDDING_MODEL` (optional, default `text-embedding-3-small`)
+- `EMBEDDING_BATCH_SIZE` (optional, default `128`)
+- `EMBEDDING_MAX_TOKENS` (optional, default `8000`)
+- `RERANK_TOP_N` (optional, default `200`)
+
+## Loading Game Data
+
+The recommender expects the `games` table to be populated. There is no built-in import CLI yet, but you can use the Steam integration module and the DB helpers in a small script:
+
+```python
+from gaming_advisor.steam import retrieve_app_details
+from gaming_advisor.db.data_handling import save_game_details
+
+app = retrieve_app_details(620)  # Portal 2
+if app:
+    save_game_details(app)
+```
+
+You can also build your own import pipeline and store records via `save_game_details()`.
+
+## Usage Tips
+
+- Type `library` in the CLI to list your saved games.
+- Use natural language like "I own Hades and Hollow Knight" or "Recommend a cozy RPG".
+- Ask for details: "How many hours do I have in Elden Ring?" or "What's my rating for Hades?"
+
+## Tests
+
+Run tests with:
+
+```bash
+pytest
+```
+
+## Project Structure
 
 ```
+cli/
+  chat_cli.py
+create_tables.py
+create_game_embedding_table.py
 gaming_advisor/
   config.py
   db/
-    engine.py
     data_handling.py
+    engine.py
     models.py
   llm/
     routing.py
   recommender/
     scorer.py
   schemas/
-services/
-  chat_service.py
-cli/
-  chat_cli.py
+  services/
+    chat_service.py
+  steam.py
 scripts/
   precompute_game_embeddings.py
 ```
 
-## Beitrag
+## Contributing
 
-Beiträge sind willkommen! Bitte öffnen Sie ein Issue oder einen Pull Request auf GitHub.
+Contributions are welcome! Please open an issue or submit a pull request.
 
-## Lizenz
+## License
 
-Dieses Projekt ist unter der MIT-Lizenz lizenziert. Siehe [LICENSE](LICENSE) für Details.
+This project is licensed under the MIT License. See `LICENSE` for details.
