@@ -11,15 +11,17 @@ from gaming_advisor.db.engine import engine
 from gaming_advisor.db.data_handling import get_user_library, update_user
 from gaming_advisor.db.models import Games, UserGames
 from gaming_advisor.llm.routing import (
+    parse_library_query,
+    parse_owned_games,
+    parse_profile_update,
+    route_user_text,
+)
+from gaming_advisor.schemas.llm import (
     LibraryQuery,
     LibraryUpdate,
     OwnedGame,
     OwnedGamesRequest,
     ProfileUpdateRequest,
-    parse_library_query,
-    parse_owned_games,
-    parse_profile_update,
-    route_user_text,
 )
 from gaming_advisor.recommender import parse_recommendation_request, recommend_for_user_request
 from gaming_advisor.schemas.recommendations import RecommendationResponse
