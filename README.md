@@ -106,6 +106,105 @@ Run tests with:
 pytest
 ```
 
+## Architecture
+
+### System Overview
+
+```mermaid
+flowchart TD
+    CLI["CLI\nchat_cli.py"]
+    CS["ChatService\nchat_service.py"]
+    LLM["LLM Routing\nrouting.py"]
+    REC["Recommender\nscorer.py"]
+    DB["DB Operations\ndata_handling.py"]
+    PG[("PostgreSQL\n+ pgvector")]
+    STEAM["Steam API\nsteam.py"]
+    OAI["OpenAI API"]
+
+    CLI -->|user message| CS
+    CS -->|classify intent| LLM
+    LLM -->|structured parse| CS
+    CS -->|recommendation request| REC
+    CS -->|CRUD| DB
+    REC -->|query embeddings| OAI
+    REC -->|score games| DB
+    DB -->|read/write| PG
+    STEAM -->|enrich catalog| DB
+    LLM -->|chat + parsing| OAI
+```
+
+### Database Schema
+
+```mermaid
+erDiagram
+    User {
+        int id PK
+        string name
+        string email
+        string language
+        int age
+        string platform
+    }
+    Games {
+        int id PK
+        int steam_appid
+        string title
+        string genres
+        string description
+        float price
+        int recommendations
+    }
+    UserGames {
+        int id PK
+        int user_id FK
+        int game_id FK
+        string status
+        float rating
+        float playtime_hours
+    }
+    GameEmbedding {
+        int id PK
+        int game_id FK
+        vector embedding
+    }
+    GameSystemRequirement {
+        int id PK
+        int game_id FK
+        string platform
+        string minimum
+        string recommended
+    }
+
+    User ||--o{ UserGames : owns
+    Games ||--o{ UserGames : "owned by"
+    Games ||--o| GameEmbedding : "embedded as"
+    Games ||--o{ GameSystemRequirement : "requires"
+```
+
+### Request Flow: Recommendation
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI
+    participant ChatService
+    participant LLM
+    participant Recommender
+    participant DB
+
+    User->>CLI: "Recommend a cozy RPG"
+    CLI->>ChatService: handle_user_message()
+    ChatService->>LLM: route_user_text()
+    LLM-->>ChatService: intent = recommendation
+    ChatService->>Recommender: recommend_for_user_request()
+    Recommender->>DB: load user library + game catalog
+    DB-->>Recommender: genres, descriptions, ratings
+    Recommender->>Recommender: score (genre + TF-IDF + embeddings + popularity)
+    Recommender-->>ChatService: ranked game list
+    ChatService-->>CLI: ChatResult
+    CLI-->>User: top recommendations
+```
+
 ## Project Structure
 
 ```
